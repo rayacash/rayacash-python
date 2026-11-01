@@ -1,6 +1,6 @@
 """Enviar una transferencia a un CBU, CVU o alias, sin riesgo de mandarla dos veces.
 
-ATENCIÓN: no hay modo de prueba. Correr este script transfiere plata real desde tu saldo.
+ATENCIÓN: correr este script transfiere plata desde tu saldo.
 
     RAYA_SECRET_KEY=raya_sk_live_… python examples/enviar_transferencia.py <destino> <monto>
 """

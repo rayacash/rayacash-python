@@ -1,7 +1,7 @@
 """Cobrar con un pago: crea un pago y muestra los datos para transferir.
 
-ATENCIÓN: no hay modo de prueba. Correr este script crea un pago real en tu negocio, que
-reserva un CVU hasta que vence (24 h, salvo que tu negocio tenga otro plazo).
+ATENCIÓN: correr este script crea un pago en tu negocio, que reserva un CVU hasta que
+vence (24 h, salvo que tu negocio tenga otro plazo).
 
     RAYA_SECRET_KEY=raya_sk_live_… python examples/cobrar_con_un_pago.py
 """

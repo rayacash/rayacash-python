@@ -1,6 +1,6 @@
 """Reembolsar un pago: devuelve todo lo recibido a la cuenta desde la que se pagó.
 
-ATENCIÓN: no hay modo de prueba. Correr este script devuelve plata real.
+ATENCIÓN: correr este script devuelve la plata del pago.
 
     RAYA_SECRET_KEY=raya_sk_live_… python examples/reembolsar_un_pago.py <payment_id>
 """
