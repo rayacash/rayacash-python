@@ -1,8 +1,8 @@
 # Changelog
 
-Los cambios de cada versión de `rayacash` publicada en [PyPI](https://pypi.org/project/rayacash/). Sigue [semver](https://semver.org/lang/es/): mientras la versión sea `0.x`, una versión menor puede traer cambios incompatibles, y los anotamos acá.
+Los cambios de cada versión de `rayacash` publicada en [PyPI](https://pypi.org/project/rayacash/). Sigue [semver](https://semver.org/lang/es/): los cambios incompatibles solo llegan en una versión mayor (`2.0.0`), y los anotamos acá.
 
-## 0.1.0
+## 1.0.0
 
 Primera versión.
 
@@ -46,6 +46,6 @@ Primera versión.
   - La firma se verifica sobre el body crudo y acepta varias `v1` (rotación del secreto). La tolerancia es simétrica y vale `None` para desactivarla.
   - Probado con los vectores del contrato.
 - `client.raw_request()` / `raw_request_async()` para endpoints que el SDK todavía no tiene.
-- `User-Agent: rayacash-python/0.1.0 Python/… httpx/…`, más el `app_info` de tu plugin. Se ve en Developers › Logs.
+- `User-Agent: rayacash-python/1.0.0 Python/… httpx/…`, más el `app_info` de tu plugin. Se ve en Developers › Logs.
 - Logger `rayacash`: `RAYA_LOG=info|debug` o `rayacash.log` lo muestran en stderr. Nunca se loguean la clave ni los bodies.
 - Tipos completos (`py.typed`), chequeados con mypy `--strict` y pyright. Python 3.9 a 3.14.

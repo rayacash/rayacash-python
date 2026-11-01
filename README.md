@@ -13,7 +13,7 @@ print(payment.bank_transfer.cvu, payment.checkout_url)
 
 > **No hay modo de prueba.** Cada request opera sobre tu cuenta real: crear un pago reserva un CVU hasta que vence y crear una transferencia mueve plata de verdad. Para probar tu integración sin tocar la API, usá un `http_client` falso (ver [Tests de tu integración](#tests-de-tu-integración)).
 
-Versión 0.1.0. Requiere Python 3.9 o más nuevo. Los cambios de cada versión están en [CHANGELOG.md](CHANGELOG.md).
+Versión 1.0.0. Requiere Python 3.9 o más nuevo. Los cambios de cada versión están en [CHANGELOG.md](CHANGELOG.md).
 
 ## Contenido
 
@@ -361,7 +361,7 @@ client = rayacash.RayaClient(
 ```
 
 - **Proxies y certificados:** pasá tus propios `httpx.Client` / `httpx.AsyncClient`. httpx también respeta `HTTPS_PROXY`.
-- **`app_info`:** identifica tu plugin en el `User-Agent` (`rayacash-python/0.1.0 … mi-plugin/1.2.0`), que ves en [Developers › Logs](https://raya.cash/dashboard/developers/logs). En el estilo global: `rayacash.set_app_info("mi-plugin", version="1.2.0")`.
+- **`app_info`:** identifica tu plugin en el `User-Agent` (`rayacash-python/1.0.0 … mi-plugin/1.2.0`), que ves en [Developers › Logs](https://raya.cash/dashboard/developers/logs). En el estilo global: `rayacash.set_app_info("mi-plugin", version="1.2.0")`.
 - **Logging:** el SDK usa el logger `rayacash`. Con `RAYA_LOG=info` (o `rayacash.log = "info"`) ves cada request, su status, su `request_id` y los reintentos en stderr; con `debug`, también la query y la idempotency key. Nunca logueamos la clave ni los bodies.
 - **Cerrar:** `client.close()` / `await client.aclose()`, o usá `with` / `async with`.
 - **Endpoints nuevos:** si la API suma un endpoint antes que el SDK, usá `client.raw_request("get", "/v1/…", params=…, body=…)`: tiene la misma autenticación, reintentos y errores.
@@ -376,7 +376,7 @@ client = rayacash.RayaClient(
 
 ## Versionado y compatibilidad
 
-- [Semver](https://semver.org/lang/es/). Mientras la versión sea `0.x`, una versión menor (`0.2`) puede traer cambios incompatibles: están anotados en el [CHANGELOG](CHANGELOG.md).
+- [Semver](https://semver.org/lang/es/): los cambios incompatibles solo llegan en una versión mayor (`2.0.0`). Las menores (`1.1.0`) suman cosas sin romper nada y las de parche (`1.0.1`) corrigen errores. Todo queda anotado en el [CHANGELOG](CHANGELOG.md).
 - La API puede sumar campos, valores de enums, eventos, códigos de error y endpoints. El SDK los deja pasar: tu código tiene que ignorar lo que no conoce.
 - Python 3.9 a 3.14. Viene con tipos (`py.typed`): mypy y pyright conocen cada objeto y sus campos.
 

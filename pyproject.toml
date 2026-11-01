@@ -13,7 +13,7 @@ license-files = ["LICENSE"]
 authors = [{ name = "Raya Cash", email = "soporte@raya.cash" }]
 keywords = ["raya", "raya cash", "pagos", "transferencias", "cvu", "cbu", "argentina", "api", "sdk"]
 classifiers = [
-  "Development Status :: 4 - Beta",
+  "Development Status :: 5 - Production/Stable",
   "Framework :: AsyncIO",
   "Intended Audience :: Developers",
   "Natural Language :: Spanish",
