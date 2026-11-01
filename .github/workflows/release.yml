@@ -1,0 +1,54 @@
+# Publica en PyPI al publicar un release de GitHub con tag vX.Y.Z.
+#
+# Usa Trusted Publishing (sin tokens guardados). Una sola vez, en pypi.org › Publishing ›
+# «Add a pending publisher»: proyecto rayacash, owner rayacash, repo rayacash-python,
+# workflow release.yml, environment pypi. Y en GitHub › Settings › Environments, crear «pypi».
+name: Release
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build y tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+      - name: El tag tiene que coincidir con la versión
+        run: |
+          version=$(sed -n 's/^VERSION = "\(.*\)"$/\1/p' src/rayacash/_version.py)
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "El tag $GITHUB_REF_NAME no coincide con la versión $version de src/rayacash/_version.py" >&2
+            exit 1
+          fi
+      - run: uv sync --locked
+      - run: uv run pytest
+      - run: uv build
+      - run: uvx twine check --strict dist/*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    name: Publicar en PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/rayacash/
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
