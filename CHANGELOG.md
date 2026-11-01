@@ -2,7 +2,7 @@
 
 Los cambios de cada versión de `rayacash` publicada en [PyPI](https://pypi.org/project/rayacash/). Sigue [semver](https://semver.org/lang/es/): mientras la versión sea `0.x`, una versión menor puede traer cambios incompatibles, y los anotamos acá.
 
-## 0.1.0 (sin publicar)
+## 0.1.0
 
 Primera versión.
 

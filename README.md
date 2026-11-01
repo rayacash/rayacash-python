@@ -13,7 +13,7 @@ print(payment.bank_transfer.cvu, payment.checkout_url)
 
 > **No hay modo de prueba.** Cada request opera sobre tu cuenta real: crear un pago reserva un CVU hasta que vence y crear una transferencia mueve plata de verdad. Para probar tu integración sin tocar la API, usá un `http_client` falso (ver [Tests de tu integración](#tests-de-tu-integración)).
 
-Versión 0.1.0 (todavía sin publicar en PyPI). Requiere Python 3.9 o más nuevo. Los cambios de cada versión están en [CHANGELOG.md](CHANGELOG.md).
+Versión 0.1.0. Requiere Python 3.9 o más nuevo. Los cambios de cada versión están en [CHANGELOG.md](CHANGELOG.md).
 
 ## Contenido
 
