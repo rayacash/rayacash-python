@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import pickle
-from typing import Any
+from typing import Any, NoReturn
 
 import httpx
 import pytest
@@ -190,16 +190,40 @@ def test_responses_without_the_error_object(
     ],
 )
 def test_error_bodies_too_deep_to_read(
-    status: int, cls: type[rayacash.RayaError], code: str
+    status: int,
+    cls: type[rayacash.RayaError],
+    code: str,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # Como cualquier body que no se puede leer (antes salía un RecursionError).
-    body = '{"error":{"code":"X","data":' + "[" * 100_000 + "]" * 100_000 + "}}"
+    # Como cualquier body que no se puede leer (antes salía un RecursionError). El RecursionError
+    # es simulado: cuántos niveles lee json depende de la versión y de la plataforma.
+    def too_deep(*args: object, **kwargs: object) -> NoReturn:
+        raise RecursionError("maximum recursion depth exceeded while decoding a JSON array")
+
+    monkeypatch.setattr(json, "loads", too_deep)
+    body = '{"error":{"code":"X","data":[[[]]]}}'
     error = make_error(status, body)
     assert type(error) is cls
     assert error.code == code
     assert error.json_body is None
     assert error.http_body == body
     assert error.request_id == "req_abc"
+
+
+def test_a_deep_error_body_never_raises_recursion_error() -> None:
+    # Desde 3.14, json mide la pila real, así que leer 100 000 niveles depende de la plataforma (en
+    # el runner de GitHub los lee). Lo que lee conserva su código, como en Node; lo que no, lleva
+    # el de respaldo.
+    body = '{"error":{"code":"X","data":' + "[" * 100_000 + "]" * 100_000 + "}}"
+    try:
+        json.loads(body)
+        expected = "X"
+    except RecursionError:
+        expected = "INTERNAL_ERROR"
+    error = make_error(500, body)
+    assert type(error) is rayacash.APIError
+    assert error.code == expected
+    assert error.http_body == body
 
 
 def test_message_falls_back_when_code_is_missing() -> None:
