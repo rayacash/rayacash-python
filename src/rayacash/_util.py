@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import platform
+import re
 import sys
 from collections.abc import Mapping
 from typing import Any
@@ -35,12 +36,25 @@ def _console_level() -> str | None:
     return level if level in ("debug", "info") else None
 
 
+# Lo que obliga a ir entre comillas, y lo que adentro se escapa: los controles C0 y DEL nunca
+# salen tal cual, así que un valor (un código que manda el servidor, una ruta) no puede partir
+# la línea ni falsificar otra. La misma regla en Python, Node.js y PHP.
+_LOGFMT_QUOTE = re.compile(r'[ ="\\\x00-\x1f\x7f]')
+_LOGFMT_ESCAPE = re.compile(r'["\\\x00-\x1f\x7f]')
+_LOGFMT_ESCAPES = {"\\": "\\\\", '"': '\\"', "\n": "\\n", "\r": "\\r", "\t": "\\t"}
+
+
+def _logfmt_escape(match: re.Match[str]) -> str:
+    char = match.group()
+    return _LOGFMT_ESCAPES.get(char) or f"\\u{ord(char):04x}"
+
+
 def _logfmt(props: Mapping[str, Any]) -> str:
     parts = []
     for key, value in props.items():
         text = str(value)
-        if not text or any(c in text for c in ' ="\\'):
-            text = '"' + text.replace("\\", "\\\\").replace('"', '\\"') + '"'
+        if not text or _LOGFMT_QUOTE.search(text):
+            text = '"' + _LOGFMT_ESCAPE.sub(_logfmt_escape, text) + '"'
         parts.append(f"{key}={text}")
     return " ".join(parts)
 

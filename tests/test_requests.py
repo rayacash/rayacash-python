@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import json
 import logging
 
 import httpx
 import pytest
 
 import rayacash
+from rayacash._util import _logfmt
 from tests.fixtures import (
     BALANCE,
     PAYMENT_ID,
@@ -59,6 +61,8 @@ def test_gives_up_after_max_network_retries(
         (409, "PAYMENT_NOT_REFUNDABLE", {}, rayacash.ConflictError),
         (503, "API_UNAVAILABLE", {}, rayacash.APIError),
         (429, "RATE_LIMITED", {"Retry-After": "120"}, rayacash.RateLimitError),
+        # Un Retry-After que no entra en un float vale infinito: antes, OverflowError.
+        (429, "RATE_LIMITED", {"Retry-After": "9" * 400}, rayacash.RateLimitError),
         (503, "BANK_UNAVAILABLE", {"Retry-After": "3600"}, rayacash.APIError),
         (400, "PARAMETER_INVALID", {}, rayacash.InvalidRequestError),
         (401, "API_KEY_EXPIRED", {}, rayacash.AuthenticationError),
@@ -209,16 +213,86 @@ def test_max_network_retries_per_client_and_per_request(api: MockAPI, sleeps: li
         default.balance.retrieve(options={"max_network_retries": -1})
 
 
-@pytest.mark.parametrize("body", ["no es json", "[1, 2]", ""])
+def test_the_wait_stays_capped_after_many_retries(api: MockAPI, sleeps: list[float]) -> None:
+    # 2.0 ** (n - 1) desbordaba un float: el reintento 1025 levantaba OverflowError.
+    client = api.client(max_network_retries=1030)
+    for _ in range(1031):
+        api.add_error(500, "INTERNAL_ERROR")
+    with pytest.raises(rayacash.APIError) as info:
+        client.balance.retrieve()
+    assert info.value.code == "INTERNAL_ERROR"
+    assert len(api.requests) == 1031
+    assert sleeps[:5] == [0.5, 1.0, 2.0, 4.0, 8.0]
+    assert set(sleeps[4:]) == {8.0}
+
+
+# Más niveles de los que Python puede recorrer: al leer el JSON (100.000) o al armar el objeto
+# (1200, dentro de un objeto que sí se lee). Antes salía un RecursionError.
+DEEP_JSON = "[" * 100_000 + "]" * 100_000
+DEEP_OBJECT = '{"object":"balance","available":' + "[" * 1200 + "]" * 1200 + "}"
+
+
+@pytest.mark.parametrize(
+    "body",
+    ["no es json", "[1, 2]", "", DEEP_JSON, DEEP_OBJECT],
+    ids=["text", "array", "empty", "deep-json", "deep-object"],
+)
 def test_success_without_a_json_object(
-    client: rayacash.RayaClient, api: MockAPI, body: str
+    client: rayacash.RayaClient, api: MockAPI, call: Caller, body: str
 ) -> None:
     api.add(200, text=body)
     with pytest.raises(rayacash.APIError) as info:
-        client.balance.retrieve()
-    assert info.value.code == "INVALID_RESPONSE"
-    assert info.value.http_status == 200
+        call(client.balance, "retrieve")
+    error = info.value
+    assert error.code == "INVALID_RESPONSE"
+    assert error.http_status == 200
+    assert error.request_id == "req_test00000000000000000001"
+    assert error.headers["raya-request-id"] == error.request_id
+    assert error.http_body == body
+    assert error.idempotency_key is None
     assert len(api.requests) == 1
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        b'{"object":"balance","currency":"\xff"}',
+        # Un surrogate codificado (ED A0 80) no es UTF-8, y UTF-16 o UTF-32 tampoco: el json() de
+        # httpx (json.loads() de los bytes) los aceptaba. Node.js y PHP, no.
+        b'{"object":"balance","currency":"\xed\xa0\x80"}',
+        '{"object":"balance","currency":"ARS"}'.encode("utf-16"),
+        '{"object":"balance","currency":"ARS"}'.encode("utf-16-le"),
+        '{"object":"balance","currency":"ARS"}'.encode("utf-32"),
+    ],
+    ids=["invalid-utf8", "surrogate", "utf16-bom", "utf16le", "utf32"],
+)
+def test_success_must_be_utf8(
+    client: rayacash.RayaClient, api: MockAPI, call: Caller, body: bytes
+) -> None:
+    api.add(200, text=body)
+    with pytest.raises(rayacash.APIError) as info:
+        call(client.balance, "retrieve")
+    error = info.value
+    assert error.code == "INVALID_RESPONSE"
+    assert error.http_status == 200
+    assert error.request_id == "req_test00000000000000000001"
+    assert error.http_body == body.decode("utf-8", errors="replace")
+    assert error.idempotency_key is None
+
+
+def test_success_with_a_utf8_bom(client: rayacash.RayaClient, api: MockAPI) -> None:
+    api.add(200, text=b'\xef\xbb\xbf{"object":"balance","currency":"ARS"}')
+    assert client.balance.retrieve().currency == "ARS"
+
+
+def test_post_without_a_json_object_keeps_the_idempotency_key(
+    client: rayacash.RayaClient, api: MockAPI
+) -> None:
+    api.add(201, text=DEEP_OBJECT)
+    with pytest.raises(rayacash.APIError) as info:
+        client.payments.create(amount=15000, idempotency_key="pedido-1")
+    assert info.value.code == "INVALID_RESPONSE"
+    assert info.value.idempotency_key == "pedido-1"
 
 
 def test_redirects_are_never_followed(client: rayacash.RayaClient, api: MockAPI) -> None:
@@ -230,11 +304,20 @@ def test_redirects_are_never_followed(client: rayacash.RayaClient, api: MockAPI)
 
 
 def test_list_endpoint_that_does_not_return_a_list(
-    client: rayacash.RayaClient, api: MockAPI
+    client: rayacash.RayaClient, api: MockAPI, call: Caller
 ) -> None:
     api.add(200, BALANCE)
-    with pytest.raises(rayacash.APIError, match="no es una lista"):
-        client.transfers.list()
+    with pytest.raises(rayacash.APIError, match="no es una lista") as info:
+        call(client.transfers, "list")
+    # Con la respuesta, como todo error de la API (antes solo traía el status).
+    error = info.value
+    assert error.code == "INVALID_RESPONSE"
+    assert error.http_status == 200
+    assert error.request_id == "req_test00000000000000000001"
+    assert error.headers["raya-request-id"] == error.request_id
+    assert error.http_body is not None
+    assert json.loads(error.http_body) == BALANCE
+    assert error.idempotency_key is None  # un GET no lleva clave
 
 
 def test_info_logs_never_include_the_key_or_the_body(
@@ -281,3 +364,60 @@ def test_logging_is_quiet_by_default(
     api.add(200, BALANCE)
     client.balance.retrieve()
     assert capsys.readouterr().err == ""
+
+
+@pytest.mark.parametrize(("env", "log"), [("debug", "info"), ("info", "debug")])
+def test_rayacash_log_wins_over_raya_log(
+    client: rayacash.RayaClient,
+    api: MockAPI,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    env: str,
+    log: str,
+) -> None:
+    monkeypatch.setattr("rayacash._util.RAYA_LOG", env)
+    monkeypatch.setattr(rayacash, "log", log)
+    api.add(201, PAYMENT_PENDING)
+    client.payments.create(amount=15000, idempotency_key="clave-1")
+    err = capsys.readouterr().err
+    assert "Request a la API de Raya" in err
+    assert ("idempotency_key=clave-1" in err) is (log == "debug")
+
+
+def test_logfmt_escapes_what_could_forge_a_line() -> None:
+    # La misma regla en Python, Node.js y PHP: líneas idénticas byte a byte.
+    line = _logfmt(
+        {
+            "plain": "ok",
+            "empty": "",
+            "space": "a b",
+            "newline": "a\nb",
+            "cr": "\r",
+            "tab": "\t",
+            "ansi": "\x1b[31m",
+            "del": "\x7f",
+            "nul": "\x00",
+            "quote": 'di "hola"',
+            "backslash": "C:\\raya",
+            "equals": "a=b",
+            "unicode": "ñandú\u2028",
+        }
+    )
+    assert line == (
+        'plain=ok empty="" space="a b" newline="a\\nb" cr="\\r" tab="\\t" ansi="\\u001b[31m" '
+        'del="\\u007f" nul="\\u0000" quote="di \\"hola\\"" backslash="C:\\\\raya" equals="a=b" '
+        "unicode=ñandú\u2028"
+    )
+
+
+def test_a_value_from_the_server_cannot_forge_a_log_line(
+    client: rayacash.RayaClient, api: MockAPI, capsys: pytest.CaptureFixture[str]
+) -> None:
+    rayacash.log = "info"
+    api.add_error(503, 'X\nmessage="Línea falsa" status=200', headers={"Retry-After": "1"})
+    api.add(200, BALANCE)
+    client.balance.retrieve()
+    lines = capsys.readouterr().err.splitlines()
+    # Request, respuesta 503, reintento, request y respuesta 200: una línea cada uno.
+    assert len(lines) == 5
+    assert 'reason="X\\nmessage=\\"Línea falsa\\" status=200"' in lines[2]

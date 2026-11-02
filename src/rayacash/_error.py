@@ -116,7 +116,7 @@ class RateLimitError(RayaError):
 
 
 class APIError(RayaError):
-    """5xx o una respuesta inesperada: falló algo del lado de Raya."""
+    """5xx, 408 o una respuesta inesperada: falló algo del lado de Raya."""
 
 
 class SignatureVerificationError(RayaError):
@@ -180,7 +180,7 @@ def error_from_response(
     """Arma el error de una respuesta que no es 2xx."""
     try:
         json_body: Any = json.loads(body) if body else None
-    except ValueError:
+    except (ValueError, RecursionError):  # RecursionError: más niveles de los que Python lee.
         json_body = None
 
     code = message = None

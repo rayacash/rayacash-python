@@ -12,7 +12,7 @@ import math
 import re
 from collections.abc import Mapping
 from datetime import datetime
-from decimal import Decimal, InvalidOperation
+from decimal import Context, Decimal, Inexact, InvalidOperation
 from typing import Any, Union
 from urllib.parse import quote
 
@@ -59,7 +59,19 @@ def format_decimal(value: Decimal) -> str:
     """El número JSON canónico: Decimal("1500.50") -> 1500.5, Decimal("1E+3") -> 1000."""
     if not value.is_finite():
         raise ValueError(f"No se puede mandar {value!r} en JSON.")
-    return format(value.normalize(), "f")
+    # normalize() redondea a la precisión del contexto (28 dígitos por defecto): con una que
+    # alcanza para todos los dígitos, solo saca los ceros de más. El contexto es uno de fábrica
+    # (no el tuyo): sus exponentes (±999999) cortan antes de armar un string gigante, y lo que no
+    # entra es un error (Inexact), nunca un valor redondeado: ni 0 ni Infinity.
+    context = Context()
+    context.prec = max(context.prec, len(value.as_tuple().digits))
+    context.traps[Inexact] = True
+    try:
+        return format(value.normalize(context), "f")
+    except Inexact:
+        raise ValueError(
+            f"No se puede mandar {value!r} en JSON: tiene demasiados dígitos."
+        ) from None
 
 
 def dumps(value: Any) -> str:
@@ -145,6 +157,11 @@ def path_id(name: str, value: object) -> str:
         raise TypeError(f"{name} tiene que ser un str, no {type(value).__name__}.")
     if not value.strip():
         raise ValueError(f"{name} no puede estar vacío.")
+    # quote() deja los puntos y httpx resuelve los segmentos «.» y «..»: transfers.retrieve(".")
+    # pediría la lista y refund(".."), POST /v1/refund. %2E no sirve: un proxy que normaliza la
+    # URL lo vuelve a convertir en punto.
+    if value in (".", ".."):
+        raise ValueError(f'{name} no puede ser "." ni "..".')
     return quote(value, safe="")
 
 

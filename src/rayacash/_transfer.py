@@ -63,7 +63,8 @@ class Transfer(RayaObject):
     currency: str
     counterparty: Counterparty
     description: str | None
-    #: El identificador en la red de transferencias (``None`` mientras está ``pending``).
+    #: El identificador en la red de transferencias, para rastrearla con la otra entidad. Es
+    #: ``None`` mientras está ``pending``, si falló y en las transferencias entre cuentas de Raya.
     reference: str | None
     #: Fecha ISO 8601 en UTC, como ``"2026-10-24T13:58:12Z"``.
     created_at: str

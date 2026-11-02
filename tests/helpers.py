@@ -30,11 +30,14 @@ class MockAPI:
         json_body: Any = None,
         *,
         headers: dict[str, str] | None = None,
-        text: str | None = None,
+        text: str | bytes | None = None,
     ) -> None:
+        """``text`` es el body tal cual, en vez del JSON: un str o sus bytes (sin charset)."""
         self._count += 1
         all_headers = {"Raya-Request-Id": f"req_test{self._count:020d}", **(headers or {})}
-        if text is not None:
+        if isinstance(text, bytes):
+            response = httpx.Response(status, content=text, headers=all_headers)
+        elif text is not None:
             response = httpx.Response(status, text=text, headers=all_headers)
         else:
             response = httpx.Response(status, json=copy.deepcopy(json_body), headers=all_headers)

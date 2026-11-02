@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import email.utils
+import math
 import time
 
 import pytest
@@ -17,6 +18,21 @@ def test_parse_retry_after_seconds(header: str | None, expected: float | None) -
     assert parse_retry_after(header) == expected
 
 
+@pytest.mark.parametrize(
+    ("header", "expected"),
+    [
+        ("9" * 308, float("9" * 308)),
+        # Como en Node.js y PHP: lo que no entra en un float es infinito (y no se reintenta).
+        # Antes, OverflowError (y ValueError desde los 4301 dígitos, por el límite de int()).
+        ("9" * 309, math.inf),
+        ("1" + "0" * 400, math.inf),
+        ("9" * 5000, math.inf),
+    ],
+)
+def test_parse_retry_after_huge_numbers(header: str, expected: float) -> None:
+    assert parse_retry_after(header) == expected
+
+
 def test_parse_retry_after_http_date(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(time, "time", lambda: 1_700_000_000.0)
     future = email.utils.formatdate(1_700_000_030, usegmt=True)
@@ -30,6 +46,12 @@ def test_parse_retry_after_http_date(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_backoff_grows_exponentially_with_a_cap() -> None:
     # El fixture `sleeps` fija el jitter en el máximo (1.0).
     assert [backoff_delay(n) for n in range(1, 7)] == [0.5, 1.0, 2.0, 4.0, 8.0, 8.0]
+
+
+def test_backoff_never_overflows() -> None:
+    # 2.0 ** 1024 no entra en un float: desde el reintento 1025 salía OverflowError.
+    assert [backoff_delay(n) for n in (1024, 1025, 1026, 10**6)] == [8.0, 8.0, 8.0, 8.0]
+    assert retry_delay(5000, None) == 8.0
 
 
 def test_backoff_jitter_halves_at_most(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import math
 import re
 import time
 from typing import TYPE_CHECKING, Union
@@ -59,8 +60,11 @@ def _check_tolerance(tolerance: object) -> float | None:
         return None
     if isinstance(tolerance, bool) or not isinstance(tolerance, (int, float)):
         raise TypeError("tolerance tiene que ser un número de segundos o None.")
-    if tolerance < 0:
-        raise ValueError("tolerance no puede ser negativa.")
+    # NaN también: abs(ahora - t) > nan nunca es cierto y apagaría el chequeo del reloj, que es
+    # la protección contra reenvíos. Primero < 0: isnan() pasa un int a float, y uno negativo
+    # que no entra (-10**400) daría OverflowError.
+    if tolerance < 0 or math.isnan(tolerance):
+        raise ValueError("tolerance tiene que ser un número de segundos, 0 o más.")
     return float(tolerance)
 
 
@@ -160,10 +164,22 @@ def construct_event(
     requestor: APIRequestor | None = None,
 ) -> Event:
     WebhookSignature.verify_header(payload, sig_header, secret, tolerance)
-    data = json.loads(_payload_bytes(payload))
-    if not isinstance(data, dict):
-        raise ValueError("El body del webhook no es un objeto JSON.")
-    return Event.construct_from(data, requestor=requestor)
+    raw = _payload_bytes(payload)
+    try:
+        # UTF-8 estricto, como Node.js y PHP: json.loads() de los bytes también acepta UTF-16,
+        # UTF-32 y los surrogates codificados. "utf-8-sig" deja pasar un BOM, como siempre.
+        data = json.loads(raw.decode("utf-8-sig"))
+        if not isinstance(data, dict):
+            raise ValueError("El body del webhook no es un objeto JSON.")
+        return Event.construct_from(data, requestor=requestor)
+    except RecursionError:
+        # Más niveles de los que Python puede recorrer, al leerlo o al armar el evento: el
+        # mismo error que un JSON inválido.
+        raise json.JSONDecodeError(
+            "El body del webhook tiene demasiados niveles anidados",
+            raw.decode("utf-8", errors="replace"),
+            0,
+        ) from None
 
 
 class Webhook:

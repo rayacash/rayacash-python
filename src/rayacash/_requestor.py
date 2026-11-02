@@ -6,6 +6,7 @@ Lo comparten ``RayaClient`` y el estilo global: cada uno le pasa su configuraci�
 from __future__ import annotations
 
 import asyncio
+import json
 import math
 import threading
 import time
@@ -13,7 +14,7 @@ import uuid
 import weakref
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, cast
+from typing import Any
 from urllib.parse import urlsplit
 
 import httpx
@@ -79,7 +80,9 @@ def normalize_api_base(value: object) -> str:
             "api_base tiene que ser una URL https:// sin query ni credenciales "
             "(o http://localhost para desarrollo local)."
         )
-    return url.rstrip("/")
+    # Una query o un fragmento vacíos ("https://x?", "https://x#") cuentan como ausentes: se
+    # sacan, porque si no las requests irían a https://x/?/v1/… o a https://x/.
+    return url.split("#", 1)[0].split("?", 1)[0].rstrip("/")
 
 
 def to_timeout(value: object) -> httpx.Timeout:
@@ -274,6 +277,13 @@ class APIRequestor:
             raise ValueError("La API solo acepta GET y POST.")
         if not path.startswith("/"):
             raise ValueError("La ruta tiene que empezar con /, como /v1/balance.")
+        if "?" in path or "#" in path:
+            # httpx reemplaza la query de la ruta por params (y la de cada página siguiente).
+            raise ValueError("La ruta va sin query (usá params).")
+        if any(c == "\\" or c < " " or c == "\x7f" for c in path):
+            # Como en Node.js y PHP: fetch convierte \ en / y saca los saltos y los tabs (httpx
+            # los rechaza con InvalidURL, que no es un ValueError).
+            raise ValueError("La ruta va sin \\ ni caracteres de control (codificá los ids).")
 
         api_key = opts.get("api_key")
         if api_key is None:
@@ -461,10 +471,16 @@ class APIRequestor:
     ) -> RayaObject:
         body = response.text
         try:
-            data = response.json()
-        except ValueError:
-            data = None
-        if not isinstance(data, dict):
+            # UTF-8 estricto, como Node.js y PHP: el json() de httpx (json.loads() de los bytes)
+            # también acepta UTF-16, UTF-32 y los surrogates codificados. "utf-8-sig" deja pasar
+            # un BOM, como siempre. UnicodeDecodeError es un ValueError.
+            data = json.loads(response.content.decode("utf-8-sig"))
+            obj = convert_to_raya_object(data, self, expected) if isinstance(data, dict) else None
+        except (ValueError, RecursionError):
+            # RecursionError: más niveles de los que Python puede recorrer, al leer el JSON o al
+            # armar el objeto.
+            data = obj = None
+        if not isinstance(obj, RayaObject):
             raise APIError(
                 f"La API respondió {response.status_code} con un body que no es un objeto JSON.",
                 code="INVALID_RESPONSE",
@@ -481,19 +497,25 @@ class APIRequestor:
             data=data,
             idempotency_key=p.idempotency_key,
         )
-        obj = convert_to_raya_object(data, self, expected)
         object.__setattr__(obj, "_last_response", last_response)
-        return cast(RayaObject, obj)
+        return obj
 
     @staticmethod
     def _as_list(
         page: RayaObject, path: str, query: Mapping[str, str], options: RequestOptions | None
     ) -> ListObject[Any]:
         if not isinstance(page, ListObject):
+            # Con la respuesta, como todo error de la API: request() siempre la deja en el objeto.
+            response = page.last_response
+            assert response is not None
             raise APIError(
                 "La API respondió algo que no es una lista.",
                 code="INVALID_RESPONSE",
-                http_status=page.last_response.http_status if page.last_response else None,
+                http_status=response.http_status,
+                request_id=response.request_id,
+                headers=response.headers,
+                http_body=response.body,
+                idempotency_key=response.idempotency_key,
             )
         page._set_retrieve_context(path, dict(query), validate_options(options))
         return page

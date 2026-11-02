@@ -130,6 +130,7 @@ def test_payload_forms() -> None:
         ({"secret": ""}, ValueError),
         ({"secret": None}, TypeError),
         ({"tolerance": -1}, ValueError),
+        ({"tolerance": float("nan")}, ValueError),
         ({"tolerance": "300"}, TypeError),
         ({"header": b"t=1,v1=x"}, TypeError),
     ],
@@ -143,6 +144,25 @@ def test_programming_errors(kwargs: dict[str, object], error: type[Exception]) -
     }
     with pytest.raises(error):
         verify(WEBHOOK_TEST_BODY, **arguments)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    "tolerance",
+    [-1, -0.5, float("-inf"), float("nan"), pytest.param(-(10**400), id="-10**400")],
+)
+def test_tolerance_is_zero_or_more(monkeypatch: pytest.MonkeyPatch, tolerance: float) -> None:
+    # NaN apagaba en silencio el chequeo del reloj, que es la protección contra reenvíos. Un int
+    # negativo que no entra en un float también es negativo (no un OverflowError).
+    monkeypatch.setattr(_webhook, "_now", lambda: float(T + 10**6))
+    with pytest.raises(
+        ValueError, match=r"^tolerance tiene que ser un número de segundos, 0 o más\.$"
+    ):
+        verify(WEBHOOK_TEST_BODY, HEADER, WEBHOOK_SECRET, tolerance=tolerance)
+
+
+def test_infinite_tolerance_is_accepted(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(_webhook, "_now", lambda: float(T + 10**9))
+    assert verify(WEBHOOK_TEST_BODY, HEADER, WEBHOOK_SECRET, tolerance=float("inf"))
 
 
 def test_construct_event() -> None:
@@ -188,6 +208,50 @@ def test_construct_event_needs_a_json_object() -> None:
         rayacash.Webhook.construct_event(
             body, rayacash.WebhookSignature.generate_header(body, WEBHOOK_SECRET), WEBHOOK_SECRET
         )
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        b"no es json",
+        # Más niveles de los que Python puede recorrer: al leer el JSON (100.000) o al armar
+        # el evento (1200). Antes salía un RecursionError.
+        b'{"object":"event","data":' + b"[" * 100_000 + b"]" * 100_000 + b"}",
+        b'{"object":"event","data":' + b"[" * 1200 + b"]" * 1200 + b"}",
+    ],
+    ids=["invalid", "deep-json", "deep-event"],
+)
+def test_construct_event_with_unreadable_json(body: bytes) -> None:
+    header = rayacash.WebhookSignature.generate_header(body, WEBHOOK_SECRET)
+    with pytest.raises(json.JSONDecodeError):
+        rayacash.Webhook.construct_event(body, header, WEBHOOK_SECRET)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        b'{"id":"evt_\xff","object":"event"}',
+        # Un surrogate codificado (ED A0 80) no es UTF-8, y UTF-16 o UTF-32 tampoco: json.loads()
+        # de los bytes los aceptaba. Node.js y PHP, no.
+        b'{"id":"evt_\xed\xa0\x80","object":"event"}',
+        '{"id":"evt_x","object":"event"}'.encode("utf-16"),
+        '{"id":"evt_x","object":"event"}'.encode("utf-16-le"),
+        '{"id":"evt_x","object":"event"}'.encode("utf-32"),
+    ],
+    ids=["invalid-utf8", "surrogate", "utf16-bom", "utf16le", "utf32"],
+)
+def test_construct_event_needs_utf8(body: bytes) -> None:
+    # Los dos son ValueError: lo que no es UTF-8, UnicodeDecodeError; los NUL de UTF-16 sin BOM
+    # (que sí es UTF-8), el JSONDecodeError de un JSON inválido.
+    header = rayacash.WebhookSignature.generate_header(body, WEBHOOK_SECRET)
+    with pytest.raises((UnicodeDecodeError, json.JSONDecodeError)):
+        rayacash.Webhook.construct_event(body, header, WEBHOOK_SECRET)
+
+
+def test_construct_event_accepts_a_utf8_bom() -> None:
+    body = b'\xef\xbb\xbf{"id":"evt_x","object":"event"}'
+    header = rayacash.WebhookSignature.generate_header(body, WEBHOOK_SECRET)
+    assert rayacash.Webhook.construct_event(body, header, WEBHOOK_SECRET).id == "evt_x"
 
 
 def test_generate_header_with_explicit_timestamp() -> None:

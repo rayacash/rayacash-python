@@ -83,7 +83,7 @@ class RayaClient:
     :param api_base: Por defecto ``https://api.raya.cash``.
     :param timeout: Segundos por intento (por defecto 65, con 10 para conectar) o un
         ``httpx.Timeout``. El servidor corta a los 60 s y crear un pago puede tardar ~40 s.
-    :param max_network_retries: Reintentos ante cortes, 5xx, 429 e
+    :param max_network_retries: Reintentos ante cortes, 408, 429, 5xx e
         ``IDEMPOTENCY_KEY_IN_USE`` (por defecto 2). Los POST reintentan con la misma
         Idempotency-Key, así que nunca se ejecutan dos veces.
     :param http_client: Un ``httpx.Client`` propio (proxies, certificados…). No lo cerramos.

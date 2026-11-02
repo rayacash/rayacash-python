@@ -27,7 +27,8 @@ from rayacash._version import VERSION
 __version__ = VERSION
 
 # --- Configuración del estilo global -------------------------------------------------------
-# Solo la usan rayacash.Balance / Transfer / Payment. Un RayaClient tiene la suya.
+# Solo la usan rayacash.Balance / Transfer / Payment. Un RayaClient tiene la suya, salvo el
+# logging (log y RAYA_LOG), que vale para todo el proceso.
 
 #: Tu clave secreta. Si es None, se lee de la variable de entorno RAYA_SECRET_KEY.
 api_key: str | None = None
@@ -39,7 +40,8 @@ timeout: float | httpx.Timeout = DEFAULT_TIMEOUT
 http_client: httpx.Client | None = None
 async_http_client: httpx.AsyncClient | None = None
 app_info: AppInfo | None = None
-#: "info" o "debug" para ver las requests en stderr (también con RAYA_LOG).
+#: "info" o "debug" para ver las requests en stderr (también con RAYA_LOG). Vale para todo el
+#: proceso, también para cada RayaClient, y gana sobre RAYA_LOG.
 log: Literal["debug", "info"] | None = None
 
 

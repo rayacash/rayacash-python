@@ -11,7 +11,7 @@ payment = client.payments.create(amount=15000, description="Pedido #1042")
 print(payment.bank_transfer.cvu, payment.checkout_url)
 ```
 
-Versión 1.0.0. Requiere Python 3.9 o más nuevo. Los cambios de cada versión están en [CHANGELOG.md](CHANGELOG.md).
+Versión 1.0.1. Requiere Python 3.9 o más nuevo. Los cambios de cada versión están en [CHANGELOG.md](CHANGELOG.md).
 
 ## Contenido
 
@@ -197,7 +197,7 @@ El SDK reintenta solo lo que es seguro reintentar, siempre con la misma `Idempot
 | Sin respuesta (corte de conexión, timeout) | Sí | Exponencial con jitter (0,5 s, 1 s, 2 s… hasta 8 s) |
 | `409 IDEMPOTENCY_KEY_IN_USE` | Sí | Lo que pide `Retry-After` |
 | `429 RATE_LIMITED` | Sí | `Retry-After` |
-| `500`, `502`, `503`, `504` | Sí | `Retry-After` o exponencial |
+| `408`, `500`, `502`, `503`, `504` | Sí | `Retry-After` o exponencial |
 | `503 API_UNAVAILABLE` (mantenimiento) | No | — |
 | Cualquier otro `4xx` | No: no se hizo nada | — |
 
@@ -239,15 +239,15 @@ Todos los errores heredan de `rayacash.RayaError`. **Decidí con `error.code`** 
 
 | Clase | HTTP | Códigos | Qué hacer |
 |---|---|---|---|
-| `InvalidRequestError` | 400, 405, 413 | `PARAMETER_MISSING`, `PARAMETER_INVALID`, `PARAMETER_UNKNOWN`, `INVALID_JSON`… | Corregí la request: `error.param` dice qué parámetro falló. |
-| `NotFoundError` (subclase de la anterior) | 404 | `PAYMENT_NOT_FOUND`, `TRANSFER_NOT_FOUND` | No existe o no es de tu cuenta. |
+| `InvalidRequestError` | 400, 405, 413 y los demás `4xx` | `PARAMETER_MISSING`, `PARAMETER_INVALID`, `PARAMETER_UNKNOWN`, `INVALID_JSON`… | Corregí la request: `error.param` dice qué parámetro falló. |
+| `NotFoundError` (subclase de la anterior) | 404 | `PAYMENT_NOT_FOUND`, `TRANSFER_NOT_FOUND`, `NOT_FOUND` | No existe o no es de tu cuenta. |
 | `AuthenticationError` | 401 | `API_KEY_MISSING`, `API_KEY_INVALID`, `API_KEY_EXPIRED`… | Revisá la clave secreta. |
 | `PermissionDeniedError` | 403 | `API_KEY_ACCOUNT_LOCKED`, `API_NOT_ENABLED`, `MERCHANT_NOT_CONFIGURED`, `TRANSFERS_BLOCKED` | La cuenta no puede hacer esto todavía. |
 | `IdempotencyError` | 409 | `IDEMPOTENCY_KEY_REUSED`, `IDEMPOTENCY_KEY_IN_USE` | Una clave por operación; si está en uso, reintentá más tarde con la misma. |
 | `ConflictError` | 409 | `PAYMENT_NOT_REFUNDABLE` | Mirá `error.data["status"]` y `error.data.get("reason")`. |
 | `UnprocessableEntityError` | 422 | `INSUFFICIENT_BALANCE`, `LIMIT_EXCEEDED`, `DESTINATION_NOT_FOUND`, `DESTINATION_INACTIVE`, `DESTINATION_NOT_SUPPORTED`, `REFUND_FAILED` | No se arregla reintentando: mostráselo a la persona. |
 | `RateLimitError` | 429 | `RATE_LIMITED` | Esperá `error.retry_after` segundos. |
-| `APIError` | 5xx | `INTERNAL_ERROR`, `BANK_UNAVAILABLE`, `CVU_UNAVAILABLE`, `API_UNAVAILABLE`, `TEMPORARILY_UNAVAILABLE` | Reintentá más tarde, en los POST con la misma `idempotency_key`. |
+| `APIError` | 5xx y 408 | `INTERNAL_ERROR`, `BANK_UNAVAILABLE`, `CVU_UNAVAILABLE`, `API_UNAVAILABLE`, `TEMPORARILY_UNAVAILABLE` | Reintentá más tarde, en los POST con la misma `idempotency_key`. |
 | `APIConnectionError` | — | `NETWORK_ERROR`, `TIMEOUT` | No llegó respuesta: reintentá con la misma `idempotency_key`. |
 
 Cada error trae `code`, `message`, `data`, `http_status`, `request_id`, `idempotency_key`, `retry_after`, `headers` y el body crudo (`http_body`, `json_body`).
@@ -359,10 +359,10 @@ client = rayacash.RayaClient(
 ```
 
 - **Proxies y certificados:** pasá tus propios `httpx.Client` / `httpx.AsyncClient`. httpx también respeta `HTTPS_PROXY`.
-- **`app_info`:** identifica tu plugin en el `User-Agent` (`rayacash-python/1.0.0 … mi-plugin/1.2.0`), que ves en [Developers › Logs](https://raya.cash/dashboard/developers/logs). En el estilo global: `rayacash.set_app_info("mi-plugin", version="1.2.0")`.
-- **Logging:** el SDK usa el logger `rayacash`. Con `RAYA_LOG=info` (o `rayacash.log = "info"`) ves cada request, su status, su `request_id` y los reintentos en stderr; con `debug`, también la query y la idempotency key. Nunca logueamos la clave ni los bodies.
+- **`app_info`:** identifica tu plugin en el `User-Agent` (`rayacash-python/1.0.1 … mi-plugin/1.2.0`), que ves en [Developers › Logs](https://raya.cash/dashboard/developers/logs). En el estilo global: `rayacash.set_app_info("mi-plugin", version="1.2.0")`.
+- **Logging:** el SDK usa el logger `rayacash`. Con `RAYA_LOG=info` (o `rayacash.log = "info"`) ves cada request, su status, su `request_id` y los reintentos en stderr; con `debug`, también la query y la idempotency key. Vale para todo el proceso, también para cada `RayaClient`. Nunca logueamos la clave ni los bodies.
 - **Cerrar:** `client.close()` / `await client.aclose()`, o usá `with` / `async with`.
-- **Endpoints nuevos:** si la API suma un endpoint antes que el SDK, usá `client.raw_request("get", "/v1/…", params=…, body=…)`: tiene la misma autenticación, reintentos y errores.
+- **Endpoints nuevos:** si la API suma un endpoint antes que el SDK, usá `client.raw_request("get", "/v1/…", params=…, body=…)`: tiene la misma autenticación, reintentos y errores. La query va en `params`, nunca en la ruta.
 - **Estilo global:** `rayacash.api_base`, `rayacash.timeout`, `rayacash.max_network_retries`, `rayacash.http_client` y `rayacash.async_http_client`.
 
 ## Seguridad

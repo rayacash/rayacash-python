@@ -111,6 +111,21 @@ def test_ids_are_encoded_and_never_empty(client: rayacash.RayaClient, api: MockA
         client.payments.refund(" ")
 
 
+@pytest.mark.parametrize("value", [".", ".."])
+def test_dot_segment_ids_fail_before_sending(
+    client: rayacash.RayaClient, api: MockAPI, call: Caller, value: str
+) -> None:
+    # httpx resolvía los segmentos: transfers.retrieve(".") pedía la lista y refund(".."),
+    # /v1/refund.
+    with pytest.raises(ValueError, match=r'^transfer_id no puede ser "\." ni "\.\."\.$'):
+        call(client.transfers, "retrieve", value)
+    with pytest.raises(ValueError, match=r'^payment_id no puede ser "\." ni "\.\."\.$'):
+        call(client.payments, "retrieve", value)
+    with pytest.raises(ValueError, match=r'^payment_id no puede ser "\." ni "\.\."\.$'):
+        call(client.payments, "refund", value)
+    assert api.requests == []
+
+
 def test_transfer_list(client: rayacash.RayaClient, api: MockAPI, call: Caller) -> None:
     api.add(200, TRANSFER_LIST)
     page = call(
@@ -165,6 +180,21 @@ def test_payment_create(client: rayacash.RayaClient, api: MockAPI, call: Caller)
     }
     # Sin clave propia, generamos un UUID v4 para esta llamada.
     assert uuid.UUID(request.headers["idempotency-key"]).version == 4
+
+
+def test_each_call_without_a_key_gets_its_own(
+    client: rayacash.RayaClient, api: MockAPI, call: Caller
+) -> None:
+    # Una clave por llamada (no por cliente ni por proceso): dos pagos iguales son dos pagos.
+    for _ in range(2):
+        api.add(201, PAYMENT_PENDING)
+        call(client.payments, "create", amount=15000)
+    for _ in range(2):
+        api.add(200, PAYMENT_REFUNDED)
+        call(client.payments, "refund", PAYMENT_ID)
+    keys = [request.headers["idempotency-key"] for request in api.requests]
+    assert len(set(keys)) == 4
+    assert all(uuid.UUID(key).version == 4 for key in keys)
 
 
 def test_payment_create_sends_only_what_you_pass(client: rayacash.RayaClient, api: MockAPI) -> None:

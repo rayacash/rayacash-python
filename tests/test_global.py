@@ -155,6 +155,13 @@ def test_global_settings(global_api: MockAPI, sleeps: list[float]) -> None:
         rayacash.Balance.retrieve()
 
 
+def test_global_api_base_without_the_empty_query_or_fragment(global_api: MockAPI) -> None:
+    rayacash.api_base = "https://api.raya.cash/?#"
+    global_api.add(200, BALANCE)
+    rayacash.Balance.retrieve()
+    assert str(global_api.last.url) == "https://api.raya.cash/v1/balance"
+
+
 def test_swapping_the_global_http_client(api: MockAPI) -> None:
     rayacash.api_key = TEST_KEY
     rayacash.http_client = api.sync_client()

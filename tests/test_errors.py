@@ -181,6 +181,27 @@ def test_responses_without_the_error_object(
     assert error.data is None
 
 
+@pytest.mark.parametrize(
+    ("status", "cls", "code"),
+    [
+        (500, rayacash.APIError, "INTERNAL_ERROR"),
+        (429, rayacash.RateLimitError, "RATE_LIMITED"),
+        (400, rayacash.InvalidRequestError, "INVALID_RESPONSE"),
+    ],
+)
+def test_error_bodies_too_deep_to_read(
+    status: int, cls: type[rayacash.RayaError], code: str
+) -> None:
+    # Como cualquier body que no se puede leer (antes salía un RecursionError).
+    body = '{"error":{"code":"X","data":' + "[" * 100_000 + "]" * 100_000 + "}}"
+    error = make_error(status, body)
+    assert type(error) is cls
+    assert error.code == code
+    assert error.json_body is None
+    assert error.http_body == body
+    assert error.request_id == "req_abc"
+
+
 def test_message_falls_back_when_code_is_missing() -> None:
     error = make_error(500, {"error": {"message": "Algo falló.", "data": {"x": 1}}})
     assert error.code == "INTERNAL_ERROR"

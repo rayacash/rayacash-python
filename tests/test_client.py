@@ -16,7 +16,7 @@ from tests.fixtures import (
     TRANSFER_LIST,
     WEBHOOK_SECRET,
 )
-from tests.helpers import OTHER_KEY, TEST_KEY, MockAPI
+from tests.helpers import OTHER_KEY, TEST_KEY, Caller, MockAPI
 
 
 def test_key_from_argument(api: MockAPI) -> None:
@@ -102,12 +102,20 @@ def test_repr_never_shows_the_key() -> None:
         ("http://localhost:8000", "http://localhost:8000"),
         ("http://127.0.0.1:8000/", "http://127.0.0.1:8000"),
         ("http://[::1]:8000", "http://[::1]:8000"),
+        # Una query o un fragmento vacíos cuentan como ausentes: antes quedaban en la base y
+        # las requests iban a /?/v1/… o a /.
+        ("https://api.raya.cash?", "https://api.raya.cash"),
+        ("https://api.raya.cash#", "https://api.raya.cash"),
+        ("https://api.raya.cash/?#", "https://api.raya.cash"),
+        ("http://localhost:8000/raya/?", "http://localhost:8000/raya"),
     ],
 )
 def test_valid_api_base(api: MockAPI, base: str, expected: str) -> None:
     api.add(200, BALANCE)
-    api.client(api_base=base).balance.retrieve()
+    client = api.client(api_base=base)
+    client.balance.retrieve()
     assert str(api.last.url) == expected + "/v1/balance"
+    assert f"api_base={expected!r}" in repr(client)
 
 
 @pytest.mark.parametrize(
@@ -118,6 +126,9 @@ def test_valid_api_base(api: MockAPI, base: str, expected: str) -> None:
         "api.raya.cash",
         "https://",
         "https://x?y=1",
+        "https://x#y",
+        "https://x?#y",
+        "https://x#?",
         "https://u:p@x",
     ],
 )
@@ -310,6 +321,39 @@ def test_raw_request_validation(
 ) -> None:
     with pytest.raises(ValueError, match=message):
         client.raw_request(method, path, **kwargs)
+
+
+@pytest.mark.parametrize("path", ["/v1/algo?x=1", "/v1/algo#x", "/v1/algo?", "/v1/algo/#"])
+def test_raw_request_paths_go_without_a_query(
+    client: rayacash.RayaClient, api: MockAPI, call: Caller, path: str
+) -> None:
+    # La query va en params: la de la ruta se perdía al pasar params y en las páginas siguientes.
+    with pytest.raises(ValueError, match=r"^La ruta va sin query \(usá params\)\.$"):
+        call(client, "raw_request", "get", path, params={"limit": 2})
+    assert api.requests == []
+
+
+@pytest.mark.parametrize(
+    "path", ["/v1/algo\\x", "/v1/algo\tx", "/v1/algo\nx", "/v1/algo\rx", "/v1/\x00", "/v1/\x7f"]
+)
+def test_raw_request_paths_go_without_backslashes_or_controls(
+    client: rayacash.RayaClient, api: MockAPI, call: Caller, path: str
+) -> None:
+    # Como en Node.js y PHP. Los de control eran un httpx.InvalidURL (no un ValueError), y \ viaja
+    # tal cual, pero fetch la convierte en / y un proxy puede hacer lo mismo.
+    with pytest.raises(
+        ValueError, match=r"^La ruta va sin \\ ni caracteres de control \(codificá los ids\)\.$"
+    ):
+        call(client, "raw_request", "get", path)
+    assert api.requests == []
+
+
+def test_raw_request_encodes_spaces_and_non_ascii(
+    client: rayacash.RayaClient, api: MockAPI
+) -> None:
+    api.add(200, {"object": "nuevo"})
+    client.raw_request("get", "/v1/algo nuevo/ñandú")
+    assert api.last.url.raw_path == b"/v1/algo%20nuevo/%C3%B1and%C3%BA"
 
 
 def test_construct_event_binds_the_client(client: rayacash.RayaClient, api: MockAPI) -> None:

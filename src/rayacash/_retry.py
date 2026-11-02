@@ -45,7 +45,9 @@ def parse_retry_after(value: str | None) -> float | None:
     if not value:
         return None
     if value.isascii() and value.isdigit():
-        return float(int(value))
+        # float() del texto, nunca de int(): un número que no entra en un float vale inf (no se
+        # reintenta), como en Node.js y PHP, en vez de un OverflowError.
+        return float(value)
     try:
         when = email.utils.parsedate_to_datetime(value)
     except (TypeError, ValueError, IndexError):
@@ -59,7 +61,9 @@ def parse_retry_after(value: str | None) -> float | None:
 
 def backoff_delay(retry_number: int) -> float:
     """Espera antes del reintento número ``retry_number`` (1, 2, …): exponencial con jitter."""
-    base = min(INITIAL_DELAY * 2.0 ** (retry_number - 1), MAX_DELAY)
+    # El exponente va con tope: desde el reintento 1025, 2.0 ** (n - 1) no entra en un float
+    # (OverflowError). Con 64 la espera ya pasó MAX_DELAY de largo.
+    base = min(INITIAL_DELAY * 2.0 ** min(retry_number - 1, 64), MAX_DELAY)
     return base / 2 + base / 2 * _jitter()
 
 
