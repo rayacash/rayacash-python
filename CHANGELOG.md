@@ -2,6 +2,10 @@
 
 Los cambios de cada versión de `rayacash` publicada en [PyPI](https://pypi.org/project/rayacash/). Sigue [semver](https://semver.org/lang/es/): los cambios incompatibles solo llegan en una versión mayor (`2.0.0`), y los anotamos acá.
 
+## 1.0.2
+
+Solo docs, sin cambios en el SDK: el README ya no nombra a otros SDKs y termina con el nombre de la empresa, Raya Cash S.A.
+
 ## 1.0.1
 
 Solo arreglos.
