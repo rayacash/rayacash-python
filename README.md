@@ -111,7 +111,7 @@ print(payment.last_response.request_id)
 
 ## Estilo global
 
-Si venís de stripe-python, también podés configurar una clave para todo el proceso y llamar a las clases:
+También podés configurar una clave para todo el proceso y llamar a las clases:
 
 ```python
 import os
