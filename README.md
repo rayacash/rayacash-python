@@ -393,3 +393,5 @@ Para publicar una versión: actualizá `src/rayacash/_version.py` y el CHANGELOG
 ---
 
 Referencia de la API: https://raya.cash/api · Soporte: soporte@raya.cash
+
+Raya Cash S.A
