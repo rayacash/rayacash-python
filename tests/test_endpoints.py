@@ -1,4 +1,4 @@
-"""Los 7 endpoints, en sync y en async: método, ruta, query, body y headers exactos."""
+"""Los 12 endpoints, en sync y en async: método, ruta, query, body y headers exactos."""
 
 from __future__ import annotations
 
@@ -18,6 +18,21 @@ from tests.fixtures import (
     TRANSFER_INBOUND,
     TRANSFER_LIST,
     TRANSFER_OUTBOUND_PENDING,
+)
+from tests.fixtures_apps import (
+    ACCESS_TOKEN,
+    APP_CLIENT_ID,
+    APP_CLIENT_SECRET,
+    AUTH_CODE,
+    CHECKOUT_ID,
+    CHECKOUT_PENDING,
+    CHECKOUT_REFUNDED,
+    CHECKOUT_SUCCEEDED,
+    NOTIFICATION_URL,
+    OAUTH_TOKEN,
+    REDIRECT_URI,
+    USER,
+    USER_ID,
 )
 from tests.helpers import Caller, MockAPI
 
@@ -109,6 +124,12 @@ def test_ids_are_encoded_and_never_empty(client: rayacash.RayaClient, api: MockA
         client.transfers.retrieve("")
     with pytest.raises(ValueError, match="payment_id"):
         client.payments.refund(" ")
+    with pytest.raises(ValueError, match="user_id"):
+        client.users.retrieve("")
+    with pytest.raises(ValueError, match="checkout_id"):
+        client.checkout.orders.refund(" ")
+    with pytest.raises(TypeError, match="checkout_id"):
+        client.checkout.orders.retrieve(None)  # type: ignore[arg-type]
 
 
 @pytest.mark.parametrize("value", [".", ".."])
@@ -123,6 +144,12 @@ def test_dot_segment_ids_fail_before_sending(
         call(client.payments, "retrieve", value)
     with pytest.raises(ValueError, match=r'^payment_id no puede ser "\." ni "\.\."\.$'):
         call(client.payments, "refund", value)
+    with pytest.raises(ValueError, match=r'^user_id no puede ser "\." ni "\.\."\.$'):
+        call(client.users, "retrieve", value)
+    with pytest.raises(ValueError, match=r'^checkout_id no puede ser "\." ni "\.\."\.$'):
+        call(client.checkout.orders, "retrieve", value)
+    with pytest.raises(ValueError, match=r'^checkout_id no puede ser "\." ni "\.\."\.$'):
+        call(client.checkout.orders, "refund", value)
     assert api.requests == []
 
 
@@ -243,3 +270,335 @@ def test_errors_come_with_the_request_id(
     assert error.request_id == "req_test00000000000000000001"
     assert error.idempotency_key == "k"
     assert len(api.requests) == 1  # los 4xx no se reintentan
+
+
+# --- Apps y cuentas conectadas: oauth.token, users.retrieve y checkout.orders.* -----------------
+
+ITEM = {"title": "Pedido 1042", "quantity": 1, "unit_price": 45000}
+
+
+def test_oauth_token(client: rayacash.RayaClient, api: MockAPI, call: Caller) -> None:
+    api.add(200, OAUTH_TOKEN)
+    token = call(client.oauth, "token", APP_CLIENT_ID, APP_CLIENT_SECRET, AUTH_CODE, REDIRECT_URI)
+    assert type(token) is rayacash.OAuthToken
+    assert token.access_token == ACCESS_TOKEN
+    assert token.user_id == USER_ID
+    assert token.token_type == "Bearer"
+    assert token.scope == "checkout profile"
+    assert token.expires_in is None
+    assert token.refresh_token is None
+    request = api.last
+    assert (request.method, str(request.url)) == ("POST", "https://api.raya.cash/v1/oauth/token")
+    # La única request sin Authorization: la app se identifica en el body. Y sin Idempotency-Key:
+    # el code se canjea una sola vez.
+    assert "authorization" not in request.headers
+    assert "idempotency-key" not in request.headers
+    assert request.headers["content-type"] == "application/json"
+    assert api.last_json() == {
+        "client_id": APP_CLIENT_ID,
+        "client_secret": APP_CLIENT_SECRET,
+        "grant_type": "authorization_code",
+        "code": AUTH_CODE,
+        "redirect_uri": REDIRECT_URI,
+    }
+    assert token.last_response is not None
+    assert token.last_response.idempotency_key is None
+    assert token.last_response.request_id == "req_test00000000000000000001"
+
+
+def test_oauth_token_needs_no_key_and_the_token_works_as_one(api: MockAPI, call: Caller) -> None:
+    client = api.client(None)  # sin api_key ni RAYA_SECRET_KEY (conftest la borra)
+    api.add(200, OAUTH_TOKEN)
+    token = call(
+        client.oauth,
+        "token",
+        client_id=APP_CLIENT_ID,
+        client_secret=APP_CLIENT_SECRET,
+        code=AUTH_CODE,
+        redirect_uri=REDIRECT_URI,
+    )
+    assert "authorization" not in api.last.headers
+    assert api.last_json()["grant_type"] == "authorization_code"
+    # Con lo que vino, un cliente que opera por esa cuenta.
+    connected = api.client(token.access_token)
+    api.add(200, USER)
+    user = call(connected.users, "retrieve", token.user_id)
+    assert type(user) is rayacash.User
+    assert api.last.headers["authorization"] == f"Bearer {ACCESS_TOKEN}"
+    # Y el mismo cliente sin clave sigue sin poder hacer las demás requests.
+    with pytest.raises(rayacash.AuthenticationError) as info:
+        client.users.retrieve("me")
+    assert info.value.code == "API_KEY_MISSING"
+    assert len(api.requests) == 2
+
+
+def test_oauth_token_errors_come_without_idempotency_key(
+    client: rayacash.RayaClient, api: MockAPI, call: Caller
+) -> None:
+    api.add_error(400, "OAUTH_GRANT_INVALID", "El code no es válido.")
+    with pytest.raises(rayacash.InvalidRequestError) as info:
+        call(client.oauth, "token", APP_CLIENT_ID, APP_CLIENT_SECRET, "usado", REDIRECT_URI)
+    assert info.value.code == "OAUTH_GRANT_INVALID"
+    assert info.value.idempotency_key is None
+    api.add_error(401, "OAUTH_CLIENT_INVALID", "El client_id o el client_secret no son válidos.")
+    with pytest.raises(rayacash.AuthenticationError) as denied:
+        call(client.oauth, "token", APP_CLIENT_ID, "raya_cs_live_otra", AUTH_CODE, REDIRECT_URI)
+    assert denied.value.code == "OAUTH_CLIENT_INVALID"
+    assert denied.value.http_status == 401
+    assert denied.value.idempotency_key is None
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "name"),
+    [
+        ({"client_id": 7650337728110670}, "client_id"),
+        ({"client_secret": None}, "client_secret"),
+        ({"code": b"c0d3"}, "code"),
+        ({"redirect_uri": ["https://tienda.example.com/raya/callback"]}, "redirect_uri"),
+    ],
+)
+def test_oauth_token_rejects_non_strings(
+    client: rayacash.RayaClient, api: MockAPI, kwargs: dict[str, object], name: str
+) -> None:
+    params: dict[str, object] = {
+        "client_id": APP_CLIENT_ID,
+        "client_secret": APP_CLIENT_SECRET,
+        "code": AUTH_CODE,
+        "redirect_uri": REDIRECT_URI,
+        **kwargs,
+    }
+    with pytest.raises(TypeError, match=f"^{name} tiene que ser un str"):
+        client.oauth.token(**params)  # type: ignore[arg-type]
+    assert api.requests == []
+
+
+def test_user_retrieve(connected: rayacash.RayaClient, api: MockAPI, call: Caller) -> None:
+    api.add(200, USER)
+    user = call(connected.users, "retrieve", USER_ID)
+    assert type(user) is rayacash.User
+    assert user.type == "personal"
+    assert user.identification is not None
+    assert user.identification.type == "DNI"
+    assert user.identification.number == "34567890"
+    assert user.address is not None
+    assert user.address.city == "Rosario"
+    assert user.merchant is not None
+    assert user.merchant.name == "Almacén Ejemplo"
+    assert user.business is None
+    request = api.last
+    assert (request.method, request.url.path) == ("GET", f"/v1/users/{USER_ID}")
+    assert request.headers["authorization"] == f"Bearer {ACCESS_TOKEN}"
+    assert request.content == b""
+    assert "idempotency-key" not in request.headers
+
+
+def test_user_retrieve_me(connected: rayacash.RayaClient, api: MockAPI) -> None:
+    api.add(200, USER)
+    assert connected.users.retrieve("me").id == USER_ID
+    assert str(api.last.url) == "https://api.raya.cash/v1/users/me"
+
+
+def test_user_not_found(connected: rayacash.RayaClient, api: MockAPI, call: Caller) -> None:
+    api.add_error(404, "USER_NOT_FOUND", "No encontramos ese usuario.")
+    with pytest.raises(rayacash.NotFoundError) as info:
+        call(connected.users, "retrieve", "5b1e7c3a-9d2f-4e6b-8a0c-7f3d1b9e2c54")
+    assert info.value.code == "USER_NOT_FOUND"
+
+
+def test_checkout_create(connected: rayacash.RayaClient, api: MockAPI, call: Caller) -> None:
+    api.add(201, CHECKOUT_PENDING)
+    checkout = call(
+        connected.checkout.orders,
+        "create",
+        items=[ITEM],
+        fee=500,
+        external_reference="pedido-1042",
+        back_urls={
+            "success": "https://tienda.example.com/pedidos/1042",
+            "failure": "https://tienda.example.com/pedidos/1042/error",
+        },
+        auto_return="approved",
+        notification_url=NOTIFICATION_URL,
+        metadata={"pedido_id": "1042"},
+    )
+    assert type(checkout) is rayacash.Checkout
+    assert checkout.status == "pending"
+    assert checkout.fee == 500
+    assert checkout.net_amount == 44500
+    assert checkout.account == USER_ID
+    assert checkout["items"][0].unit_price == 45000
+    assert checkout.bank_transfer.cvu == "0000123390456538582824"
+    assert checkout.checkout_url.endswith(CHECKOUT_ID)
+    request = api.last
+    assert (request.method, request.url.path) == ("POST", "/v1/checkout/orders")
+    assert request.headers["authorization"] == f"Bearer {ACCESS_TOKEN}"
+    assert api.last_json() == {
+        "items": [ITEM],
+        "fee": 500,
+        "external_reference": "pedido-1042",
+        "metadata": {"pedido_id": "1042"},
+        "back_urls": {
+            "success": "https://tienda.example.com/pedidos/1042",
+            "failure": "https://tienda.example.com/pedidos/1042/error",
+        },
+        "auto_return": "approved",
+        "notification_url": NOTIFICATION_URL,
+    }
+    # Sin clave propia, generamos un UUID v4 para esta llamada, como en payments.create.
+    assert uuid.UUID(request.headers["idempotency-key"]).version == 4
+    assert checkout.last_response is not None
+    assert checkout.last_response.idempotency_key == request.headers["idempotency-key"]
+
+
+def test_checkout_create_sends_only_what_you_pass_and_exact_amounts(
+    connected: rayacash.RayaClient, api: MockAPI
+) -> None:
+    api.add(201, CHECKOUT_PENDING)
+    connected.checkout.orders.create(items=[ITEM], idempotency_key="pedido-1042-checkout")
+    assert (
+        api.last.content == b'{"items":[{"title":"Pedido 1042","quantity":1,"unit_price":45000}]}'
+    )
+    assert api.last.headers["idempotency-key"] == "pedido-1042-checkout"
+
+    api.add(201, CHECKOUT_PENDING)
+    connected.checkout.orders.create(
+        items=[
+            {"title": "Café", "quantity": 2, "unit_price": Decimal("1500.50")},
+            {"title": "Medialunas", "quantity": 6, "unit_price": "350.00"},
+        ],
+        fee=Decimal("100.00"),
+        description="Desayuno",
+        expires_in=3600,
+    )
+    assert api.last.content == (
+        b'{"items":[{"title":"Caf\\u00e9","quantity":2,"unit_price":1500.5},'
+        b'{"title":"Medialunas","quantity":6,"unit_price":350}],'
+        b'"fee":100,"description":"Desayuno","expires_in":3600}'
+    )
+
+
+def test_checkout_create_each_call_gets_its_own_key(
+    connected: rayacash.RayaClient, api: MockAPI, call: Caller
+) -> None:
+    for _ in range(2):
+        api.add(201, CHECKOUT_PENDING)
+        call(connected.checkout.orders, "create", items=[ITEM])
+    for _ in range(2):
+        api.add(200, CHECKOUT_REFUNDED)
+        call(connected.checkout.orders, "refund", CHECKOUT_ID)
+    keys = [request.headers["idempotency-key"] for request in api.requests]
+    assert len(set(keys)) == 4
+    assert all(uuid.UUID(key).version == 4 for key in keys)
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "error", "message"),
+    [
+        ({"items": {"title": "x", "quantity": 1, "unit_price": 1}}, TypeError, "^items tiene"),
+        ({"items": "Pedido 1042"}, TypeError, "^items tiene"),
+        ({"items": ["Pedido 1042"]}, TypeError, r"^items\[0\] tiene"),
+        ({"items": [ITEM, {**ITEM, "unit_price": True}]}, TypeError, r"^items\[1\]\.unit_price"),
+        ({"items": [{**ITEM, "unit_price": float("inf")}]}, ValueError, r"^items\[0\]\.unit_price"),
+        ({"items": [{**ITEM, "unit_price": "45.000,50"}]}, ValueError, r"^items\[0\]\.unit_price"),
+        ({"items": [ITEM], "fee": True}, TypeError, "^fee"),
+        ({"items": [ITEM], "fee": "quinientos"}, ValueError, "^fee"),
+        ({"items": [ITEM], "metadata": [("a", "b")]}, TypeError, "^metadata"),
+        ({"items": [ITEM], "back_urls": "https://tienda.example.com"}, TypeError, "^back_urls"),
+        ({"items": [ITEM], "expires_in": 600.0}, TypeError, "^expires_in"),
+        ({"items": [ITEM], "expires_in": True}, TypeError, "^expires_in"),
+        ({"items": [ITEM], "idempotency_key": "con espacios"}, ValueError, "idempotency_key"),
+    ],
+)
+def test_checkout_create_rejects_bad_shapes_before_sending(
+    connected: rayacash.RayaClient,
+    api: MockAPI,
+    kwargs: dict[str, object],
+    error: type[Exception],
+    message: str,
+) -> None:
+    with pytest.raises(error, match=message):
+        connected.checkout.orders.create(**kwargs)  # type: ignore[arg-type]
+    assert api.requests == []
+
+
+def test_checkout_items_travel_as_given_and_the_api_validates_them(
+    connected: rayacash.RayaClient, api: MockAPI
+) -> None:
+    # Una clave de más o un unit_price que falta no se validan acá: la API responde con el campo.
+    api.add_error(400, "PARAMETER_UNKNOWN", "Parámetro desconocido.", {"field": "items[0].sku"})
+    with pytest.raises(rayacash.InvalidRequestError) as info:
+        connected.checkout.orders.create(items=[{**ITEM, "sku": "A-1"}])
+    assert info.value.param == "items[0].sku"
+    assert api.last_json()["items"][0]["sku"] == "A-1"
+    api.add_error(400, "PARAMETER_MISSING", "Falta unit_price.", {"field": "items[0].unit_price"})
+    with pytest.raises(rayacash.InvalidRequestError) as info:
+        connected.checkout.orders.create(items=[{"title": "Pedido 1042", "quantity": 1}])
+    assert info.value.param == "items[0].unit_price"
+    assert api.last_json()["items"] == [{"title": "Pedido 1042", "quantity": 1}]
+
+
+def test_checkout_create_without_merchant(
+    connected: rayacash.RayaClient, api: MockAPI, call: Caller
+) -> None:
+    api.add_error(
+        403,
+        "CONNECTED_ACCOUNT_NOT_CONFIGURED",
+        "La cuenta conectada todavía no configuró su negocio en Raya.",
+    )
+    with pytest.raises(rayacash.PermissionDeniedError) as info:
+        call(connected.checkout.orders, "create", items=[ITEM], fee=500)
+    assert info.value.code == "CONNECTED_ACCOUNT_NOT_CONFIGURED"
+    assert len(api.requests) == 1  # los 4xx no se reintentan
+
+
+def test_checkout_retrieve(connected: rayacash.RayaClient, api: MockAPI, call: Caller) -> None:
+    api.add(200, CHECKOUT_SUCCEEDED)
+    checkout = call(connected.checkout.orders, "retrieve", CHECKOUT_ID)
+    assert type(checkout) is rayacash.Checkout
+    assert checkout.status == "succeeded"
+    assert checkout.amount_received == 45000
+    assert checkout.payer is not None
+    assert checkout.payer.account == "0000123300602983525937"
+    assert checkout.paid_at == "2026-10-24T16:07:41Z"
+    assert (api.last.method, api.last.url.path) == ("GET", f"/v1/checkout/orders/{CHECKOUT_ID}")
+    assert api.last.content == b""
+
+
+def test_checkout_refund(connected: rayacash.RayaClient, api: MockAPI, call: Caller) -> None:
+    api.add(200, CHECKOUT_REFUNDED)
+    checkout = call(connected.checkout.orders, "refund", CHECKOUT_ID, idempotency_key="reembolso-1")
+    assert checkout.status == "refunded"
+    assert checkout.refunded_at == "2026-10-24T17:20:00Z"
+    request = api.last
+    assert (request.method, request.url.path) == (
+        "POST",
+        f"/v1/checkout/orders/{CHECKOUT_ID}/refund",
+    )
+    assert request.content == b""  # el reembolso va sin body
+    assert "content-type" not in request.headers
+    assert request.headers["content-length"] == "0"
+    assert request.headers["idempotency-key"] == "reembolso-1"
+    assert request.headers["authorization"] == f"Bearer {ACCESS_TOKEN}"
+
+
+def test_checkout_not_found(connected: rayacash.RayaClient, api: MockAPI, call: Caller) -> None:
+    api.add_error(404, "CHECKOUT_NOT_FOUND", "No encontramos ese checkout.")
+    with pytest.raises(rayacash.NotFoundError) as info:
+        call(connected.checkout.orders, "retrieve", PAYMENT_ID)
+    assert info.value.code == "CHECKOUT_NOT_FOUND"
+
+
+def test_revoked_token_is_an_authentication_error(
+    connected: rayacash.RayaClient, api: MockAPI, call: Caller
+) -> None:
+    api.add_error(
+        401,
+        "ACCESS_TOKEN_REVOKED",
+        "La cuenta desconectó tu aplicación: el access_token ya no sirve.",
+        headers={"WWW-Authenticate": 'Bearer realm="api"'},
+    )
+    with pytest.raises(rayacash.AuthenticationError) as info:
+        call(connected.checkout.orders, "retrieve", CHECKOUT_ID)
+    assert info.value.code == "ACCESS_TOKEN_REVOKED"
+    assert info.value.headers["www-authenticate"] == 'Bearer realm="api"'
+    assert len(api.requests) == 1

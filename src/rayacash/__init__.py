@@ -12,6 +12,12 @@ Estilo global, como stripe-python::
     rayacash.api_key = os.environ["RAYA_SECRET_KEY"]
     payment = rayacash.Payment.create(amount=15000)
 
+Apps y cuentas conectadas (cobrar a nombre de otra cuenta con tu comisión)::
+
+    token = client.oauth.token(client_id, client_secret, code, redirect_uri)
+    connected = rayacash.RayaClient(token.access_token)  # raya_at_live_…
+    checkout = connected.checkout.orders.create(items=[...], fee=500)
+
 Referencia de la API: https://raya.cash/api
 """
 
@@ -27,10 +33,11 @@ from rayacash._version import VERSION
 __version__ = VERSION
 
 # --- Configuración del estilo global -------------------------------------------------------
-# Solo la usan rayacash.Balance / Transfer / Payment. Un RayaClient tiene la suya, salvo el
-# logging (log y RAYA_LOG), que vale para todo el proceso.
+# Solo la usan rayacash.Balance / Transfer / Payment / OAuth / User / Checkout. Un RayaClient
+# tiene la suya, salvo el logging (log y RAYA_LOG), que vale para todo el proceso.
 
-#: Tu clave secreta. Si es None, se lee de la variable de entorno RAYA_SECRET_KEY.
+#: Tu clave secreta (raya_sk_live_…) o el access_token de una cuenta conectada (raya_at_live_…).
+#: Si es None, se lee de la variable de entorno RAYA_SECRET_KEY.
 api_key: str | None = None
 api_base: str = DEFAULT_API_BASE
 max_network_retries: int = DEFAULT_MAX_NETWORK_RETRIES
@@ -57,6 +64,7 @@ def set_app_info(name: str, *, version: str | None = None, url: str | None = Non
 
 
 from rayacash._balance import Balance  # noqa: E402
+from rayacash._checkout import Checkout, CheckoutStatus  # noqa: E402
 from rayacash._client import RayaClient  # noqa: E402
 from rayacash._encoding import Amount  # noqa: E402
 from rayacash._error import (  # noqa: E402
@@ -75,11 +83,13 @@ from rayacash._error import (  # noqa: E402
 )
 from rayacash._event import Event, EventType  # noqa: E402
 from rayacash._list_object import AnyIterator, ListObject  # noqa: E402
+from rayacash._oauth import OAuth, OAuthToken  # noqa: E402
 from rayacash._payment import Payment, PaymentStatus  # noqa: E402
 from rayacash._raya_object import RayaObject  # noqa: E402
 from rayacash._request_options import RequestOptions  # noqa: E402
 from rayacash._response import RayaResponse  # noqa: E402
 from rayacash._transfer import Transfer, TransferDirection, TransferStatus  # noqa: E402
+from rayacash._user import User, UserType  # noqa: E402
 from rayacash._webhook import Webhook, WebhookSignature  # noqa: E402
 
 __all__ = [
@@ -92,6 +102,8 @@ __all__ = [
     "AppInfo",
     "AuthenticationError",
     "Balance",
+    "Checkout",
+    "CheckoutStatus",
     "ConflictError",
     "Event",
     "EventType",
@@ -99,6 +111,8 @@ __all__ = [
     "InvalidRequestError",
     "ListObject",
     "NotFoundError",
+    "OAuth",
+    "OAuthToken",
     "Payment",
     "PaymentStatus",
     "PermissionDeniedError",
@@ -113,6 +127,8 @@ __all__ = [
     "TransferDirection",
     "TransferStatus",
     "UnprocessableEntityError",
+    "User",
+    "UserType",
     "Webhook",
     "WebhookSignature",
     "__version__",

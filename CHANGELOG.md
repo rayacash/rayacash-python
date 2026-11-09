@@ -2,6 +2,21 @@
 
 Los cambios de cada versión de `rayacash` publicada en [PyPI](https://pypi.org/project/rayacash/). Sigue [semver](https://semver.org/lang/es/): los cambios incompatibles solo llegan en una versión mayor (`2.0.0`), y los anotamos acá.
 
+## 1.1.0
+
+Apps y cuentas conectadas: cobrar a nombre de otras cuentas de Raya con tu comisión fija (Developers › Integraciones › Apps). Nada de lo que ya existía cambia de comportamiento.
+
+- `client.oauth.token(client_id, client_secret, code, redirect_uri)` canjea el `code` de autorización por el `access_token` de la cuenta conectada (`POST /v1/oauth/token`, objeto `OAuthToken`: `access_token`, `token_type`, `scope`, `user_id`, `expires_in` y `refresh_token`, estos dos siempre `None`). Es la única request sin `Authorization`: el `RayaClient` puede no tener clave. `grant_type` lo pone el SDK y la request no lleva `Idempotency-Key` (el `code` se canjea una sola vez).
+- `RayaClient(api_key=…)`, `rayacash.api_key`, `RAYA_SECRET_KEY` y `options={"api_key": …}` aceptan también el `access_token` de una cuenta conectada (`raya_at_live_…`). Siguen rechazando la clave pública y una clave vacía o con espacios; los mensajes de `API_KEY_MISSING`, `API_KEY_PUBLISHABLE_NOT_ALLOWED` y `API_KEY_INVALID` nombran las dos credenciales. `repr(client)` enmascara el token igual que la clave (`raya_at_live_…G9hJ`).
+- `client.users.retrieve(user_id)` (o `"me"`): el objeto `User` de la cuenta conectada (`GET /v1/users/:id`), con `User.Identification`, `User.Address`, `User.Business` (y `User.Business.Representative`) y `User.Merchant`. Solo las cuentas conectadas a tu app: cualquier otro id es `NotFoundError` con `USER_NOT_FOUND`.
+- `client.checkout.orders.create(items=, fee=, description=, external_reference=, metadata=, back_urls=, auto_return=, notification_url=, expires_in=, idempotency_key=)`, `retrieve(checkout_id)` y `refund(checkout_id, idempotency_key=)` (`/v1/checkout/orders`), con el objeto `Checkout` (`Checkout.Item`, `BankTransfer`, `Payer`, `BackUrls`; `metadata` como dict común) y `checkout.refund()`, que usa el cliente del que vino. `fee` y cada `unit_price` viajan exactos como `amount` (`int`, `float`, `Decimal` o `str`); los ítems viajan tal como los pasás (una clave de más la rechaza la API con el campo, como `items[0].sku`). Sin `idempotency_key` se genera un UUID v4 por llamada, como en `payments.create`. Los ítems del objeto se leen con `checkout["items"]`: como todo `RayaObject` es un `dict`, `checkout.items` es el método `items()` de `dict`.
+- Estilo global: `rayacash.OAuth.token(...)`, `rayacash.User.retrieve(...)` y `rayacash.Checkout.create/retrieve/refund(...)`, con `rayacash.api_key` igual al `access_token`.
+- Eventos `checkout.created`, `checkout.succeeded`, `checkout.failed` y `checkout.refunded` en `EventType`; `event.data.object` puede ser un `Checkout` (y `event.data.object.refund()` anda con el cliente del `access_token`).
+- 11 códigos de error nuevos (43 en total), con la clase que les toca por status: `OAUTH_GRANT_INVALID` y `OAUTH_GRANT_TYPE_UNSUPPORTED` (400, `InvalidRequestError`); `ACCESS_TOKEN_MISSING`, `ACCESS_TOKEN_INVALID`, `ACCESS_TOKEN_REVOKED` y `OAUTH_CLIENT_INVALID` (401, `AuthenticationError`); `CONNECTED_ACCOUNT_LOCKED` (con `data.reason`), `CONNECTED_ACCOUNT_NOT_CONFIGURED` y `APP_DISABLED` (403, `PermissionDeniedError`); `USER_NOT_FOUND` y `CHECKOUT_NOT_FOUND` (404, `NotFoundError`).
+- `str()` y `repr()` de un `OAuthToken` enmascaran el `access_token`, para que no termine entero en un log; `token.access_token`, `to_dict()` y `json.dumps(token)` lo dan entero.
+- Cada método nuevo tiene su `*_async`. Todo tipado (`py.typed`): `OAuth`, `OAuthToken`, `User`, `UserType`, `Checkout` y `CheckoutStatus` se exportan desde `rayacash`.
+- Docs: el README suma la sección «Apps y cuentas conectadas» con el flujo de cuatro pasos (link de autorización, canje del `code`, lectura de la cuenta y checkouts), y la tabla de errores, los webhooks y la seguridad mencionan los access tokens.
+
 ## 1.0.2
 
 Solo docs, sin cambios en el SDK: el README ya no nombra a otros SDKs y termina con el nombre de la empresa, Raya Cash S.A.

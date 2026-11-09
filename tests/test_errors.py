@@ -10,23 +10,35 @@ import pytest
 import rayacash
 from rayacash._error import error_from_response
 
-# Los 32 códigos del contrato (api.md › Códigos de error).
+# Los 43 códigos del contrato (api.md › Códigos de error): los 32 de siempre más los 11 de Apps y
+# cuentas conectadas, cada uno al final de su bloque HTTP, en el orden del contrato.
 CATALOG: list[tuple[str, int, type[rayacash.RayaError]]] = [
     ("INVALID_JSON", 400, rayacash.InvalidRequestError),
     ("PARAMETER_MISSING", 400, rayacash.InvalidRequestError),
     ("PARAMETER_INVALID", 400, rayacash.InvalidRequestError),
     ("PARAMETER_UNKNOWN", 400, rayacash.InvalidRequestError),
+    ("OAUTH_GRANT_INVALID", 400, rayacash.InvalidRequestError),
+    ("OAUTH_GRANT_TYPE_UNSUPPORTED", 400, rayacash.InvalidRequestError),
     ("API_KEY_MISSING", 401, rayacash.AuthenticationError),
     ("API_KEY_INVALID", 401, rayacash.AuthenticationError),
     ("API_KEY_PUBLISHABLE_NOT_ALLOWED", 401, rayacash.AuthenticationError),
     ("API_KEY_EXPIRED", 401, rayacash.AuthenticationError),
+    ("ACCESS_TOKEN_MISSING", 401, rayacash.AuthenticationError),
+    ("ACCESS_TOKEN_INVALID", 401, rayacash.AuthenticationError),
+    ("ACCESS_TOKEN_REVOKED", 401, rayacash.AuthenticationError),
+    ("OAUTH_CLIENT_INVALID", 401, rayacash.AuthenticationError),
     ("API_KEY_ACCOUNT_LOCKED", 403, rayacash.PermissionDeniedError),
     ("API_NOT_ENABLED", 403, rayacash.PermissionDeniedError),
     ("MERCHANT_NOT_CONFIGURED", 403, rayacash.PermissionDeniedError),
     ("TRANSFERS_BLOCKED", 403, rayacash.PermissionDeniedError),
+    ("CONNECTED_ACCOUNT_LOCKED", 403, rayacash.PermissionDeniedError),
+    ("CONNECTED_ACCOUNT_NOT_CONFIGURED", 403, rayacash.PermissionDeniedError),
+    ("APP_DISABLED", 403, rayacash.PermissionDeniedError),
     ("TRANSFER_NOT_FOUND", 404, rayacash.NotFoundError),
     ("PAYMENT_NOT_FOUND", 404, rayacash.NotFoundError),
     ("NOT_FOUND", 404, rayacash.NotFoundError),
+    ("USER_NOT_FOUND", 404, rayacash.NotFoundError),
+    ("CHECKOUT_NOT_FOUND", 404, rayacash.NotFoundError),
     ("METHOD_NOT_ALLOWED", 405, rayacash.InvalidRequestError),
     ("IDEMPOTENCY_KEY_REUSED", 409, rayacash.IdempotencyError),
     ("IDEMPOTENCY_KEY_IN_USE", 409, rayacash.IdempotencyError),
@@ -62,8 +74,8 @@ def make_error(
     )
 
 
-def test_catalog_has_the_32_codes() -> None:
-    assert len({code for code, _, _ in CATALOG}) == 32
+def test_catalog_has_the_43_codes() -> None:
+    assert len({code for code, _, _ in CATALOG}) == 43
 
 
 @pytest.mark.parametrize(("code", "status", "cls"), CATALOG)
@@ -104,6 +116,27 @@ def test_error_attributes() -> None:
         "InvalidRequestError(message='amount tiene que ser un número con hasta 2 decimales.', "
         "http_status=400, code='PARAMETER_INVALID', request_id='req_abc')"
     )
+
+
+def test_connected_account_locked_carries_the_reason() -> None:
+    # El único de los códigos de apps con data: {"reason": "kyc_required" | "user_blocked"}.
+    error = make_error(
+        403,
+        {
+            "error": {
+                "code": "CONNECTED_ACCOUNT_LOCKED",
+                "message": "La cuenta conectada no puede operar en este momento.",
+                "data": {"reason": "kyc_required"},
+            }
+        },
+    )
+    assert type(error) is rayacash.PermissionDeniedError
+    assert error.data == {"reason": "kyc_required"}
+    revoked = make_error(
+        401, {"error": {"code": "ACCESS_TOKEN_REVOKED", "message": "x", "data": None}}
+    )
+    assert type(revoked) is rayacash.AuthenticationError
+    assert revoked.data is None
 
 
 def test_param_is_none_without_field() -> None:

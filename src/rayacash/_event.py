@@ -4,11 +4,13 @@ from typing import ClassVar
 
 from typing_extensions import Literal
 
+from rayacash._checkout import Checkout
 from rayacash._payment import Payment
 from rayacash._raya_object import RayaObject
 from rayacash._transfer import Transfer
 
 #: Los tipos de evento que existen hoy. Pueden sumarse otros: tu código tiene que ignorarlos.
+#: Los ``checkout.*`` le llegan al dueño de la app; la cuenta conectada recibe sus ``payment.*``.
 EventType = Literal[
     "transfer.received",
     "transfer.sent",
@@ -17,6 +19,10 @@ EventType = Literal[
     "payment.succeeded",
     "payment.failed",
     "payment.refunded",
+    "checkout.created",
+    "checkout.succeeded",
+    "checkout.failed",
+    "checkout.refunded",
     "webhook.test",
 ]
 
@@ -24,15 +30,15 @@ EventType = Literal[
 class Event(RayaObject):
     """Un evento de webhook. Armalo con ``rayacash.Webhook.construct_event(...)``.
 
-    ``event.data.object`` es el ``Transfer`` o el ``Payment`` tal como estaba cuando ocurrió el
-    evento. ``webhook.test`` (el botón «Enviar evento de prueba») trae ``{"object": "test", …}``:
-    respondé 2xx e ignoralo.
+    ``event.data.object`` es el ``Transfer``, el ``Payment`` o el ``Checkout`` tal como estaba
+    cuando ocurrió el evento. ``webhook.test`` (el botón «Enviar evento de prueba») trae
+    ``{"object": "test", …}``: respondé 2xx e ignoralo.
     """
 
     OBJECT_NAME = "event"
 
     class Data(RayaObject):
-        object: Transfer | Payment | RayaObject
+        object: Transfer | Payment | Checkout | RayaObject
 
     _inner_class_types: ClassVar[dict[str, type[RayaObject]]] = {"data": Data}
 

@@ -16,6 +16,18 @@ from tests.fixtures import (
     TRANSFER_INBOUND,
     TRANSFER_LIST,
 )
+from tests.fixtures_apps import (
+    ACCESS_TOKEN,
+    CHECKOUT_ID,
+    CHECKOUT_PENDING,
+    CHECKOUT_SUCCEEDED,
+    EVENT_CHECKOUT_SUCCEEDED,
+    NOTIFICATION_URL,
+    OAUTH_TOKEN,
+    USER,
+    USER_BUSINESS,
+    USER_ID,
+)
 
 
 def test_transfer_is_a_typed_dict_with_attribute_access() -> None:
@@ -152,3 +164,84 @@ def test_list_object_without_data() -> None:
     page: rayacash.ListObject[Any] = rayacash.ListObject.construct_from({"object": "list"})
     assert list(page) == []
     assert len(page) == 0
+
+
+# --- Apps y cuentas conectadas: Checkout, User y OAuthToken ------------------------------------
+
+
+def test_checkout_nested_objects_and_items() -> None:
+    pending = convert_to_raya_object(CHECKOUT_PENDING)
+    assert type(pending) is rayacash.Checkout
+    assert type(pending.bank_transfer) is rayacash.Checkout.BankTransfer
+    assert type(pending.back_urls) is rayacash.Checkout.BackUrls
+    assert pending.back_urls.failure == "https://tienda.example.com/pedidos/1042/error"
+    assert pending.payer is None
+    assert pending.auto_return == "approved"
+    assert pending.notification_url == NOTIFICATION_URL
+    assert type(pending.metadata) is dict  # dict común: las claves son tuyas
+    # Los ítems se leen con checkout["items"]: checkout.items es el método items() de dict.
+    items = pending["items"]
+    assert [type(item) for item in items] == [rayacash.Checkout.Item]
+    assert items[0].title == "Pedido 1042"
+    assert items[0].quantity == 1
+    assert items[0].unit_price == 45000
+    assert callable(pending.items)
+    assert dict(pending.items()) == pending
+
+    succeeded = convert_to_raya_object(CHECKOUT_SUCCEEDED)
+    assert type(succeeded.payer) is rayacash.Checkout.Payer
+    assert succeeded.payer.name == "María Ejemplo"
+    assert succeeded.to_dict() == CHECKOUT_SUCCEEDED
+    assert type(succeeded.to_dict()["items"][0]) is dict
+    assert json.loads(json.dumps(succeeded)) == CHECKOUT_SUCCEEDED
+    assert repr(succeeded).startswith(f"<Checkout checkout id={CHECKOUT_ID} at 0x")
+
+
+def test_user_nested_objects() -> None:
+    user = convert_to_raya_object(USER)
+    assert type(user) is rayacash.User
+    assert user.type == "personal"
+    assert type(user.identification) is rayacash.User.Identification
+    assert user.identification.number == "34567890"
+    assert type(user.address) is rayacash.User.Address
+    assert user.address.postal_code == "2000"
+    assert type(user.merchant) is rayacash.User.Merchant
+    assert user.merchant.image is None
+    assert user.business is None
+    assert user.identity_verified is True
+    assert user.to_dict() == USER
+
+    business = convert_to_raya_object(USER_BUSINESS)
+    assert business.type == "business"
+    assert type(business.business) is rayacash.User.Business
+    assert type(business.business.representative) is rayacash.User.Business.Representative
+    assert business.business.representative.tax_id == "20123456785"
+    assert business.identification.type == "CUIT"
+    assert business.address is None
+    assert business.merchant is None
+    assert json.loads(json.dumps(business)) == USER_BUSINESS
+
+
+def test_oauth_token_masks_the_token_in_str_and_repr() -> None:
+    token = convert_to_raya_object(OAUTH_TOKEN)
+    assert type(token) is rayacash.OAuthToken
+    assert token.access_token == ACCESS_TOKEN
+    assert token.expires_in is None
+    assert token.refresh_token is None
+    text = str(token)
+    assert ACCESS_TOKEN not in text
+    assert ACCESS_TOKEN not in repr(token)
+    assert json.loads(text)["access_token"] == "raya_at_live_…fG9h"
+    assert json.loads(text)["user_id"] == USER_ID
+    # Para guardarlo o mandarlo: el valor entero.
+    assert token.to_dict() == OAUTH_TOKEN
+    assert json.loads(json.dumps(token)) == OAUTH_TOKEN
+    empty = rayacash.OAuthToken.construct_from({"object": "oauth_token"})
+    assert str(empty) == '{\n  "object": "oauth_token"\n}'
+
+
+def test_event_hydrates_a_checkout() -> None:
+    event = rayacash.Event.construct_from(EVENT_CHECKOUT_SUCCEEDED)
+    assert event.type == "checkout.succeeded"
+    assert type(event.data.object) is rayacash.Checkout
+    assert event.data.object.net_amount == 44500

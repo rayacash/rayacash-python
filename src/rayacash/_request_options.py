@@ -12,7 +12,8 @@ from typing_extensions import TypedDict
 class RequestOptions(TypedDict, total=False):
     """Opciones de una sola request.
 
-    - ``api_key``: otra clave secreta para esta llamada.
+    - ``api_key``: otra clave secreta (o el access_token de una cuenta conectada) para esta
+      llamada.
     - ``timeout``: segundos por intento (o un ``httpx.Timeout``).
     - ``max_network_retries``: reintentos para esta llamada (``0`` los apaga).
     """

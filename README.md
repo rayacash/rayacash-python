@@ -1,6 +1,6 @@
 # rayacash
 
-El SDK oficial de Python para la [API de Raya Cash](https://raya.cash/api). Te deja cobrar por transferencia con un CVU exclusivo por pago, mandar plata a cualquier CBU, CVU o alias, consultar tu saldo, conciliar tus depósitos y verificar los webhooks, con reintentos seguros e idempotencia incluidos.
+El SDK oficial de Python para la [API de Raya Cash](https://raya.cash/api). Te deja cobrar por transferencia con un CVU exclusivo por pago, mandar plata a cualquier CBU, CVU o alias, consultar tu saldo, conciliar tus depósitos y verificar los webhooks, con reintentos seguros e idempotencia incluidos. Y si construís una app, cobrar a nombre de otras cuentas de Raya con tu comisión ([Apps y cuentas conectadas](#apps-y-cuentas-conectadas)).
 
 ```python
 import rayacash
@@ -11,7 +11,7 @@ payment = client.payments.create(amount=15000, description="Pedido #1042")
 print(payment.bank_transfer.cvu, payment.checkout_url)
 ```
 
-Versión 1.0.2. Requiere Python 3.9 o más nuevo. Los cambios de cada versión están en [CHANGELOG.md](CHANGELOG.md).
+Versión 1.1.0. Requiere Python 3.9 o más nuevo. Los cambios de cada versión están en [CHANGELOG.md](CHANGELOG.md).
 
 ## Contenido
 
@@ -24,6 +24,7 @@ Versión 1.0.2. Requiere Python 3.9 o más nuevo. Los cambios de cada versión e
 - [Idempotencia](#idempotencia)
 - [Reintentos y timeouts](#reintentos-y-timeouts)
 - [Paginación](#paginación)
+- [Apps y cuentas conectadas](#apps-y-cuentas-conectadas)
 - [Errores](#errores)
 - [Webhooks](#webhooks)
 - [Tests de tu integración](#tests-de-tu-integración)
@@ -38,6 +39,7 @@ Versión 1.0.2. Requiere Python 3.9 o más nuevo. Los cambios de cada versión e
 2. **Tu clave secreta** (`raya_sk_live_…`), de [Developers › API Keys](https://raya.cash/dashboard/developers/api-keys). La vas a ver completa una sola vez: guardala en una variable de entorno de tu servidor.
 3. **Para cobrar:** tu negocio configurado en [Configuración › Negocio](https://raya.cash/dashboard/settings/business). Sin eso, crear un pago da `MERCHANT_NOT_CONFIGURED`.
 4. **Para los webhooks:** un destino en [Developers › Webhooks](https://raya.cash/dashboard/developers/webhooks) y su secreto (`whsec_…`).
+5. **Para cobrar a nombre de otras cuentas:** una app en [Developers › Integraciones › Apps](https://raya.cash/dashboard/developers/apps), con su `client_id` y su `client_secret` (`raya_cs_live_…`). Ver [Apps y cuentas conectadas](#apps-y-cuentas-conectadas).
 
 ## Instalación
 
@@ -101,7 +103,7 @@ for deposit in client.transfers.list(
     print(deposit.id, deposit.net_amount)
 ```
 
-Cada respuesta es un objeto del SDK (`Balance`, `Transfer`, `Payment`, `Event` o `ListObject`) que también es un `dict`: `payment.status` y `payment["status"]` dan lo mismo, y `json.dumps(payment)` anda. Los valores vienen tal como los manda la API: montos `int` o `float` y fechas en string ISO 8601 (`"2026-10-24T14:00:00Z"`). Si la API suma un campo nuevo, lo ves igual (`payment["campo_nuevo"]`).
+Cada respuesta es un objeto del SDK (`Balance`, `Transfer`, `Payment`, `Checkout`, `User`, `OAuthToken`, `Event` o `ListObject`) que también es un `dict`: `payment.status` y `payment["status"]` dan lo mismo, y `json.dumps(payment)` anda. Los valores vienen tal como los manda la API: montos `int` o `float` y fechas en string ISO 8601 (`"2026-10-24T14:00:00Z"`). Si la API suma un campo nuevo, lo ves igual (`payment["campo_nuevo"]`).
 
 Cada objeto trae `last_response`, con el `request_id` (`req_…`) que nos tenés que mandar si escribís a soporte:
 
@@ -130,7 +132,9 @@ transfer = rayacash.Transfer.create(
 page = rayacash.Transfer.list(direction="inbound")
 ```
 
-Los dos estilos usan el mismo núcleo y se comportan igual. Preferí `RayaClient` si tu proceso usa más de una clave o si querés configurar cada cliente por separado. `payment.refund()` usa el cliente del que vino el pago: si lo trajiste con un `RayaClient`, usa ese cliente; si no, la configuración global.
+Para las apps, también `rayacash.OAuth.token(...)`, `rayacash.User.retrieve(...)` y `rayacash.Checkout.create/retrieve/refund(...)`, con `rayacash.api_key` igual al `access_token` de la cuenta conectada.
+
+Los dos estilos usan el mismo núcleo y se comportan igual. Preferí `RayaClient` si tu proceso usa más de una clave (por ejemplo, un `access_token` por cuenta conectada) o si querés configurar cada cliente por separado. `payment.refund()` usa el cliente del que vino el pago: si lo trajiste con un `RayaClient`, usa ese cliente; si no, la configuración global.
 
 ## Async
 
@@ -233,16 +237,91 @@ for transfer in page.auto_paging_iter():
 
 Los cobros de tus pagos no aparecen en Transferencias: se siguen en cada `Payment` y con los webhooks `payment.*`.
 
+## Apps y cuentas conectadas
+
+Si construís una plataforma que cobra **a nombre de otras cuentas de Raya** (un marketplace, un sistema de gestión, una pasarela), creá una **app** en [Developers › Integraciones › Apps](https://raya.cash/dashboard/developers/apps). Cada cuenta que la conecte te da un `access_token` para cobrar a su nombre con tu **comisión fija** (`fee`) y para leer sus datos. Es el equivalente de las aplicaciones y el `marketplace_fee` de Mercado Pago. El flujo tiene cuatro pasos.
+
+**1. El link de autorización.** Ponelo en tu web. Al tocarlo, la cuenta entra a Raya, ve tu app y sus permisos, y autoriza. Raya la redirige a tu `redirect_uri` (una de las registradas en la app, idéntica) con un `code` en la query, que dura 10 minutos y se canjea una sola vez. `state` es opcional y te vuelve tal cual.
+
+```text
+https://raya.cash/authorization?client_id=7650337728110670&response_type=code&redirect_uri=https%3A%2F%2Ftienda.example.com%2Fraya%2Fcallback&state=abc123
+```
+
+**2. Canjeá el `code` por el `access_token`.** Es la única request sin `Authorization`: tu app se identifica con `client_id` y `client_secret`, así que el `RayaClient` puede no tener clave. `grant_type` lo pone el SDK. Guardá `access_token` y `user_id` como guardás tu clave secreta. El token **no vence**: deja de valer cuando la cuenta desconecta tu app (desde ahí, `ACCESS_TOKEN_REVOKED`) o cuando vuelve a autorizarla (se emite uno nuevo). `expires_in` y `refresh_token` vienen en `None`.
+
+```python
+import os
+
+import rayacash
+
+client = rayacash.RayaClient()  # sin clave: oauth.token no la necesita
+
+token = client.oauth.token(
+    client_id="7650337728110670",
+    client_secret=os.environ["RAYA_CLIENT_SECRET"],  # raya_cs_live_…, solo en tu servidor
+    code=request.args["code"],  # el code que llegó a tu redirect_uri
+    redirect_uri="https://tienda.example.com/raya/callback",  # la misma del link
+)
+connection.save(user_id=token.user_id, access_token=token.access_token)
+```
+
+**3. Leé los datos de la cuenta** con un `RayaClient` que use su `access_token` en lugar de tu clave secreta. Solo podés leer las cuentas conectadas a tu app (cualquier otro id da `USER_NOT_FOUND`), y nunca viene la foto del documento ni el número de trámite:
+
+```python
+connected = rayacash.RayaClient(connection.access_token)  # raya_at_live_…
+
+user = connected.users.retrieve(connection.user_id)  # o "me"
+print(user.full_name, user.identification.type, user.identification.number)  # DNI o CUIT
+print(user.email, user.tax_id, user.identity_verified)
+if user.merchant is None:
+    ...  # todavía no configuró su negocio: no se le pueden crear checkouts
+```
+
+**4. Creá checkouts a su nombre.** `fee` es tu comisión fija en pesos (no un porcentaje), menor que el total. Quien paga transfiere en `checkout_url` (la página de pago, con el nombre y la imagen del comercio conectado) o al CVU de `bank_transfer`. Al acreditarse, `net_amount` (el total menos `fee`) se liquida a la cuenta conectada y `fee` a la tuya, cada una con su plazo de liquidación (y las dos se pueden adelantar). Un reembolso devuelve todo lo recibido y revierte tu comisión.
+
+```python
+checkout = connected.checkout.orders.create(
+    items=[{"title": "Pedido 1042", "quantity": 1, "unit_price": 45000}],
+    fee=500,  # tu comisión: se liquida a tu cuenta
+    external_reference="pedido-1042",
+    back_urls={
+        "success": "https://tienda.example.com/pedidos/1042",
+        "failure": "https://tienda.example.com/pedidos/1042/error",
+    },
+    auto_return="approved",  # al acreditarse, quien paga vuelve solo a back_urls.success
+    notification_url="we_3fN8kQ2vX7mB1pR5tZ9cW4yD",  # tu destino de Developers › Webhooks
+    metadata={"pedido_id": "1042"},
+    idempotency_key=order.checkout_idempotency_key,  # un UUID v4 guardado con el pedido
+)
+print(checkout.checkout_url, checkout.net_amount)  # 44500 para la cuenta conectada
+for item in checkout["items"]:  # checkout.items es el método items() de dict
+    print(item.title, item.quantity, item.unit_price)
+
+# Consultar el checkout (por ejemplo, cuando quien paga vuelve a back_urls.success).
+checkout = connected.checkout.orders.retrieve(checkout.id)
+if checkout.status == "succeeded":
+    ...  # entregá el pedido
+
+# Reembolsar (total, hasta 30 días después de pagado): también checkout.refund().
+checkout = connected.checkout.orders.refund(checkout.id, idempotency_key=refund.idempotency_key)
+```
+
+- Te avisamos con los webhooks `checkout.created`, `checkout.succeeded`, `checkout.failed` y `checkout.refunded` (con el `Checkout` en `event.data.object`): en el destino de `notification_url` si lo mandaste, o en los suscriptos a `checkout.*`. La cuenta conectada recibe sus `payment.*` de siempre.
+- `checkout.id` es el id del pago: la cuenta conectada lo ve con su propia clave en `payments.retrieve()`.
+- `expires_in` (de 300 a 864000 segundos) cambia cuánto dura el checkout; por defecto, el plazo del comercio conectado. Mientras está `pending` reserva un CVU de ese comercio.
+- Si la cuenta todavía no configuró su negocio, crear un checkout da `CONNECTED_ACCOUNT_NOT_CONFIGURED`; si desconectó tu app, `ACCESS_TOKEN_REVOKED`: pedile que vuelva a conectarla.
+- Un `RayaClient` por cuenta conectada. Con pocas cuentas, también podés pasar el token por llamada: `client.users.retrieve("me", options={"api_key": connection.access_token})`.
+
 ## Errores
 
 Todos los errores heredan de `rayacash.RayaError`. **Decidí con `error.code`** (estable), nunca con `error.message` (texto en castellano para personas, puede cambiar). Si llega un código que el SDK no conoce, la clase sale del código HTTP.
 
 | Clase | HTTP | Códigos | Qué hacer |
 |---|---|---|---|
-| `InvalidRequestError` | 400, 405, 413 y los demás `4xx` | `PARAMETER_MISSING`, `PARAMETER_INVALID`, `PARAMETER_UNKNOWN`, `INVALID_JSON`… | Corregí la request: `error.param` dice qué parámetro falló. |
-| `NotFoundError` (subclase de la anterior) | 404 | `PAYMENT_NOT_FOUND`, `TRANSFER_NOT_FOUND`, `NOT_FOUND` | No existe o no es de tu cuenta. |
-| `AuthenticationError` | 401 | `API_KEY_MISSING`, `API_KEY_INVALID`, `API_KEY_EXPIRED`… | Revisá la clave secreta. |
-| `PermissionDeniedError` | 403 | `API_KEY_ACCOUNT_LOCKED`, `API_NOT_ENABLED`, `MERCHANT_NOT_CONFIGURED`, `TRANSFERS_BLOCKED` | La cuenta no puede hacer esto todavía. |
+| `InvalidRequestError` | 400, 405, 413 y los demás `4xx` | `PARAMETER_MISSING`, `PARAMETER_INVALID`, `PARAMETER_UNKNOWN`, `INVALID_JSON`, `OAUTH_GRANT_INVALID`… | Corregí la request: `error.param` dice qué parámetro falló. `OAUTH_GRANT_INVALID`: el `code` ya se usó, venció o la `redirect_uri` no coincide. |
+| `NotFoundError` (subclase de la anterior) | 404 | `PAYMENT_NOT_FOUND`, `TRANSFER_NOT_FOUND`, `CHECKOUT_NOT_FOUND`, `USER_NOT_FOUND`, `NOT_FOUND` | No existe, no es de tu cuenta o no es de una cuenta conectada a tu app. |
+| `AuthenticationError` | 401 | `API_KEY_MISSING`, `API_KEY_INVALID`, `API_KEY_EXPIRED`, `ACCESS_TOKEN_INVALID`, `ACCESS_TOKEN_REVOKED`, `OAUTH_CLIENT_INVALID`… | Revisá la clave secreta o el `access_token`. `ACCESS_TOKEN_REVOKED`: la cuenta desconectó tu app. |
+| `PermissionDeniedError` | 403 | `API_KEY_ACCOUNT_LOCKED`, `API_NOT_ENABLED`, `MERCHANT_NOT_CONFIGURED`, `TRANSFERS_BLOCKED`, `CONNECTED_ACCOUNT_LOCKED`, `CONNECTED_ACCOUNT_NOT_CONFIGURED`, `APP_DISABLED` | La cuenta (o la cuenta conectada, o tu app) no puede hacer esto todavía. |
 | `IdempotencyError` | 409 | `IDEMPOTENCY_KEY_REUSED`, `IDEMPOTENCY_KEY_IN_USE` | Una clave por operación; si está en uso, reintentá más tarde con la misma. |
 | `ConflictError` | 409 | `PAYMENT_NOT_REFUNDABLE` | Mirá `error.data["status"]` y `error.data.get("reason")`. |
 | `UnprocessableEntityError` | 422 | `INSUFFICIENT_BALANCE`, `LIMIT_EXCEEDED`, `DESTINATION_NOT_FOUND`, `DESTINATION_INACTIVE`, `DESTINATION_NOT_SUPPORTED`, `REFUND_FAILED` | No se arregla reintentando: mostráselo a la persona. |
@@ -273,7 +352,7 @@ Un reembolso que la red todavía no confirmó sale como `APIError` con `code == 
 
 ## Webhooks
 
-Te avisamos en tu servidor apenas pasa algo: `payment.succeeded` cuando llega la transferencia de un pago, `transfer.received` cuando te depositan, etc. **Antes de procesar un evento, verificá la firma**:
+Te avisamos en tu servidor apenas pasa algo: `payment.succeeded` cuando llega la transferencia de un pago, `transfer.received` cuando te depositan, `checkout.succeeded` cuando se paga un checkout de tu app, etc. **Antes de procesar un evento, verificá la firma**:
 
 ```python
 import os
@@ -311,10 +390,10 @@ def raya_webhook():
 - **Usá el body crudo, tal como llegó.** Si tu framework ya parseó el JSON, volver a serializarlo cambia el body y la firma no coincide. En Flask, `request.get_data()`; en Django, `request.body`; en FastAPI, `await request.body()`. Hay ejemplos completos en [`examples/`](examples).
 - Respondé `2xx` en menos de 15 segundos. Si tenés que hacer algo lento, guardá el evento, respondé y procesalo después.
 - El mismo evento puede llegar más de una vez y desordenado: guardá los `event.id` que procesaste y, si necesitás el estado actual, consultá el objeto con la API.
-- `event.data.object` es el `Transfer` o el `Payment` tal como estaba cuando ocurrió el evento.
+- `event.data.object` es el `Transfer`, el `Payment` o el `Checkout` tal como estaba cuando ocurrió el evento.
 - «Enviar evento de prueba» (en Developers › Webhooks) manda un `webhook.test`: respondé `2xx` e ignoralo.
 - La firma tolera 5 minutos de diferencia con tu reloj (`tolerance=300`). Mientras rotás el secreto llegan dos firmas: alcanza con que coincida una.
-- Con `client.construct_event(...)` el evento queda ligado a ese cliente: `event.data.object.refund()` usa su clave.
+- Con `client.construct_event(...)` el evento queda ligado a ese cliente: `event.data.object.refund()` usa su clave. Para un `Checkout`, el cliente tiene que llevar el `access_token` de la cuenta conectada.
 
 ## Tests de tu integración
 
@@ -359,7 +438,7 @@ client = rayacash.RayaClient(
 ```
 
 - **Proxies y certificados:** pasá tus propios `httpx.Client` / `httpx.AsyncClient`. httpx también respeta `HTTPS_PROXY`.
-- **`app_info`:** identifica tu plugin en el `User-Agent` (`rayacash-python/1.0.2 … mi-plugin/1.2.0`), que ves en [Developers › Logs](https://raya.cash/dashboard/developers/logs). En el estilo global: `rayacash.set_app_info("mi-plugin", version="1.2.0")`.
+- **`app_info`:** identifica tu plugin en el `User-Agent` (`rayacash-python/1.1.0 … mi-plugin/1.2.0`), que ves en [Developers › Logs](https://raya.cash/dashboard/developers/logs). En el estilo global: `rayacash.set_app_info("mi-plugin", version="1.2.0")`.
 - **Logging:** el SDK usa el logger `rayacash`. Con `RAYA_LOG=info` (o `rayacash.log = "info"`) ves cada request, su status, su `request_id` y los reintentos en stderr; con `debug`, también la query y la idempotency key. Vale para todo el proceso, también para cada `RayaClient`. Nunca logueamos la clave ni los bodies.
 - **Cerrar:** `client.close()` / `await client.aclose()`, o usá `with` / `async with`.
 - **Endpoints nuevos:** si la API suma un endpoint antes que el SDK, usá `client.raw_request("get", "/v1/…", params=…, body=…)`: tiene la misma autenticación, reintentos y errores. La query va en `params`, nunca en la ruta.
@@ -367,8 +446,8 @@ client = rayacash.RayaClient(
 
 ## Seguridad
 
-- **La clave secreta va solo en tu servidor**, leída de una variable de entorno. Nunca en el navegador, en una app mobile ni en el repositorio. Para cobrar desde el navegador está [Raya.js](https://raya.cash/raya-js), con la clave pública.
-- El SDK rechaza la clave pública (`raya_pk_…`) sin mandar nada, nunca la muestra completa (`repr(client)` la enmascara) y nunca sigue redirects.
+- **La clave secreta va solo en tu servidor**, leída de una variable de entorno. Nunca en el navegador, en una app mobile ni en el repositorio. Lo mismo vale para el `client_secret` de tu app y para los `access_token` de las cuentas conectadas. Para cobrar desde el navegador está [Raya.js](https://raya.cash/raya-js), con la clave pública.
+- El SDK rechaza la clave pública (`raya_pk_…`) sin mandar nada, nunca muestra completa la clave ni un `access_token` (`repr(client)` y `str(token)` los enmascaran) y nunca sigue redirects.
 - Si la clave se filtró, rotala en Developers › API Keys con vencimiento «Ahora»: la anterior deja de funcionar al instante.
 - Las requests que hacés con la clave secreta quedan 30 días en [Developers › Logs](https://raya.cash/dashboard/developers/logs).
 
