@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import uuid
 
 import httpx
 import pytest
@@ -22,7 +23,24 @@ from tests.fixtures import (
     TRANSFER_OUTBOUND_PENDING,
     WEBHOOK_SECRET,
 )
+from tests.fixtures_apps import (
+    ACCESS_TOKEN,
+    APP_CLIENT_ID,
+    APP_CLIENT_SECRET,
+    AUTH_CODE,
+    CHECKOUT_ID,
+    CHECKOUT_PENDING,
+    CHECKOUT_REFUNDED,
+    CHECKOUT_SUCCEEDED,
+    EVENT_CHECKOUT_SUCCEEDED,
+    OAUTH_TOKEN,
+    REDIRECT_URI,
+    USER,
+    USER_ID,
+)
 from tests.helpers import OTHER_KEY, TEST_KEY, Caller, MockAPI
+
+ITEM = {"title": "Pedido 1042", "quantity": 1, "unit_price": 45000}
 
 
 @pytest.fixture
@@ -190,3 +208,92 @@ def test_owned_global_clients(monkeypatch: pytest.MonkeyPatch, api: MockAPI) -> 
     rayacash.Balance.retrieve()
     rayacash.Balance.retrieve()
     assert len(created) == 1  # el estilo global reusa su cliente httpx
+
+
+# --- Apps y cuentas conectadas: rayacash.OAuth / User / Checkout --------------------------------
+
+
+def test_apps_endpoints(global_api: MockAPI, call: Caller) -> None:
+    api = global_api
+    api.add(200, OAUTH_TOKEN)
+    token = call(rayacash.OAuth, "token", APP_CLIENT_ID, APP_CLIENT_SECRET, AUTH_CODE, REDIRECT_URI)
+    assert type(token) is rayacash.OAuthToken
+    assert "authorization" not in api.last.headers
+    assert json.loads(api.last.content)["grant_type"] == "authorization_code"
+
+    rayacash.api_key = token.access_token  # el estilo global opera por la cuenta conectada
+    api.add(200, USER)
+    user = call(rayacash.User, "retrieve", token.user_id)
+    assert type(user) is rayacash.User
+    assert api.last.url.path == f"/v1/users/{USER_ID}"
+    assert api.last.headers["authorization"] == f"Bearer {ACCESS_TOKEN}"
+
+    api.add(201, CHECKOUT_PENDING)
+    checkout = call(rayacash.Checkout, "create", items=[ITEM], fee=500)
+    assert type(checkout) is rayacash.Checkout
+    assert json.loads(api.last.content) == {"items": [ITEM], "fee": 500}
+    assert uuid.UUID(api.last.headers["idempotency-key"]).version == 4
+
+    api.add(200, CHECKOUT_SUCCEEDED)
+    assert call(rayacash.Checkout, "retrieve", CHECKOUT_ID).status == "succeeded"
+
+    api.add(200, CHECKOUT_REFUNDED)
+    refunded = call(rayacash.Checkout, "refund", CHECKOUT_ID, idempotency_key="r-1")
+    assert refunded.status == "refunded"
+    assert api.last.url.path == f"/v1/checkout/orders/{CHECKOUT_ID}/refund"
+    assert api.last.headers["idempotency-key"] == "r-1"
+
+
+def test_oauth_token_without_any_key(api: MockAPI, call: Caller) -> None:
+    # Sin rayacash.api_key ni RAYA_SECRET_KEY: el canje no necesita clave.
+    rayacash.http_client = api.sync_client()
+    rayacash.async_http_client = api.async_client()
+    api.add(200, OAUTH_TOKEN)
+    token = call(rayacash.OAuth, "token", APP_CLIENT_ID, APP_CLIENT_SECRET, AUTH_CODE, REDIRECT_URI)
+    assert token.user_id == USER_ID
+    assert "authorization" not in api.last.headers
+    assert "idempotency-key" not in api.last.headers
+
+
+def test_checkout_instance_refund(global_api: MockAPI, call: Caller) -> None:
+    rayacash.api_key = ACCESS_TOKEN
+    global_api.add(200, CHECKOUT_SUCCEEDED)
+    checkout = rayacash.Checkout.retrieve(CHECKOUT_ID)
+    global_api.add(200, CHECKOUT_REFUNDED)
+    refunded = call(checkout, "refund")
+    assert refunded.status == "refunded"
+    assert checkout.status == "succeeded"  # devuelve un checkout nuevo, no muta el original
+    assert global_api.last.url.path == f"/v1/checkout/orders/{CHECKOUT_ID}/refund"
+    assert global_api.last.headers["authorization"] == f"Bearer {ACCESS_TOKEN}"
+
+
+def test_checkout_instance_refund_uses_the_client_it_came_from(
+    global_api: MockAPI, call: Caller
+) -> None:
+    other_api = MockAPI()
+    connected = other_api.client(ACCESS_TOKEN)
+    other_api.add(200, CHECKOUT_SUCCEEDED)
+    checkout = connected.checkout.orders.retrieve(CHECKOUT_ID)
+    other_api.add(200, CHECKOUT_REFUNDED)
+    call(checkout, "refund", idempotency_key="r-3")
+    assert other_api.last.headers["authorization"] == f"Bearer {ACCESS_TOKEN}"
+    assert other_api.last.headers["idempotency-key"] == "r-3"
+    assert global_api.requests == []
+
+
+def test_checkout_events_from_construct_event_use_the_global_style(global_api: MockAPI) -> None:
+    body = json.dumps(EVENT_CHECKOUT_SUCCEEDED)
+    header = rayacash.WebhookSignature.generate_header(body, WEBHOOK_SECRET)
+    event = rayacash.Webhook.construct_event(body, header, WEBHOOK_SECRET)
+    checkout = event.data.object
+    assert isinstance(checkout, rayacash.Checkout)
+    global_api.add(200, CHECKOUT_REFUNDED)
+    asyncio.run(checkout.refund_async(idempotency_key="r-2"))
+    assert global_api.last.url.path == f"/v1/checkout/orders/{CHECKOUT_ID}/refund"
+    assert global_api.last.headers["idempotency-key"] == "r-2"
+
+
+def test_checkout_refund_needs_an_id() -> None:
+    checkout = rayacash.Checkout.construct_from({"object": "checkout"})
+    with pytest.raises(ValueError, match="no tiene id"):
+        checkout.refund()

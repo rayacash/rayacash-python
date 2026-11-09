@@ -24,6 +24,22 @@ def test_readme_blocks_compile(index: int) -> None:
     )
 
 
+def test_the_readme_covers_apps_and_connected_accounts() -> None:
+    assert "## Apps y cuentas conectadas" in README
+    assert any("client.oauth.token(" in block for block in BLOCKS)
+    assert any("checkout.orders.create(" in block for block in BLOCKS)
+    assert any("users.retrieve(" in block for block in BLOCKS)
+
+
+def test_the_docstrings_say_we_for_webhook_destinations() -> None:
+    # Los destinos de Developers › Webhooks son ``we_…`` (``whe_`` fue el prefijo de un borrador).
+    sources = sorted((ROOT / "src" / "rayacash").glob("*.py"))
+    assert sources
+    for path in sources:
+        assert "whe_" not in path.read_text(encoding="utf-8"), path.name
+    assert "whe_" not in README
+
+
 def test_the_offline_testing_example_runs() -> None:
     (block,) = [b for b in BLOCKS if "httpx.MockTransport" in b]
     exec(compile(block, "README.md", "exec"), {})  # no sale a la red: usa MockTransport

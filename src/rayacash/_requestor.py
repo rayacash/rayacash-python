@@ -44,25 +44,32 @@ _LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 
 
 def check_api_key(key: object) -> str:
-    """Rechaza antes de mandar nada lo que nunca puede andar. El formato lo valida la API."""
+    """Rechaza antes de mandar nada lo que nunca puede andar. El formato lo valida la API.
+
+    Vale tu clave secreta (``raya_sk_live_…``) o el access_token de una cuenta conectada
+    (``raya_at_live_…``): los dos van igual, en ``Authorization: Bearer``.
+    """
     if not isinstance(key, str):
-        raise TypeError(f"La clave secreta tiene que ser un str, no {type(key).__name__}.")
+        raise TypeError(f"La clave tiene que ser un str, no {type(key).__name__}.")
     if not key.strip():
         raise AuthenticationError(
-            "Falta la clave secreta: pasala a RayaClient(api_key=…), asignala a rayacash.api_key "
-            "o definí la variable de entorno RAYA_SECRET_KEY.",
+            "Falta la clave: pasá la clave secreta (raya_sk_live_…) o el access_token de una "
+            "cuenta conectada (raya_at_live_…) a RayaClient(api_key=…), asignala a "
+            "rayacash.api_key o definí la variable de entorno RAYA_SECRET_KEY.",
             code="API_KEY_MISSING",
         )
     if key.startswith("raya_pk_"):
         raise AuthenticationError(
             "Usaste la clave pública (raya_pk_…). La API se usa con la clave secreta "
-            "(raya_sk_live_…), solo desde tu servidor.",
+            "(raya_sk_live_…) o el access_token de una cuenta conectada (raya_at_live_…), "
+            "solo desde tu servidor.",
             code="API_KEY_PUBLISHABLE_NOT_ALLOWED",
         )
     if not all("!" <= c <= "~" for c in key):
         raise AuthenticationError(
-            "La clave secreta tiene espacios o caracteres inválidos: copiala de nuevo desde "
-            "Developers › API Keys.",
+            "La clave tiene espacios o caracteres inválidos: copiala de nuevo desde "
+            "Developers › API Keys (la clave secreta) o de la respuesta de oauth.token "
+            "(el access_token).",
             code="API_KEY_INVALID",
         )
     return key
@@ -226,8 +233,9 @@ class APIRequestor:
         idempotency_key: str | None = None,
         options: RequestOptions | None = None,
         expected: type[RayaObject] | None = None,
+        authenticated: bool = True,
     ) -> RayaObject:
-        prepared = self._prepare(method, path, query, body, idempotency_key, options)
+        prepared = self._prepare(method, path, query, body, idempotency_key, options, authenticated)
         response = self._send(prepared)
         return self._hydrate(prepared, response, expected)
 
@@ -241,8 +249,9 @@ class APIRequestor:
         idempotency_key: str | None = None,
         options: RequestOptions | None = None,
         expected: type[RayaObject] | None = None,
+        authenticated: bool = True,
     ) -> RayaObject:
-        prepared = self._prepare(method, path, query, body, idempotency_key, options)
+        prepared = self._prepare(method, path, query, body, idempotency_key, options, authenticated)
         response = await self._send_async(prepared)
         return self._hydrate(prepared, response, expected)
 
@@ -270,7 +279,11 @@ class APIRequestor:
         body: Mapping[str, Any] | None,
         idempotency_key: str | None,
         options: RequestOptions | None,
+        authenticated: bool = True,
     ) -> _Prepared:
+        """``authenticated=False`` es para ``POST /v1/oauth/token``, la única request sin
+        ``Authorization``: no exige clave y no lleva ``Idempotency-Key`` (el servidor no la usa
+        ahí; el code se canjea una sola vez)."""
         opts = validate_options(options)
         method = method.upper()
         if method not in ("GET", "POST"):
@@ -285,17 +298,16 @@ class APIRequestor:
             # los rechaza con InvalidURL, que no es un ValueError).
             raise ValueError("La ruta va sin \\ ni caracteres de control (codificá los ids).")
 
-        api_key = opts.get("api_key")
-        if api_key is None:
-            api_key = self._config.api_key()
-        # Sin clave levanta API_KEY_MISSING antes de cualquier I/O.
-        api_key = check_api_key(api_key if api_key is not None else "")
-
-        headers = {
-            "Authorization": f"Bearer {api_key}",
-            "Accept": "application/json",
-            "User-Agent": self._config.user_agent(),
-        }
+        headers: dict[str, str] = {}
+        if authenticated:
+            api_key = opts.get("api_key")
+            if api_key is None:
+                api_key = self._config.api_key()
+            # Sin clave levanta API_KEY_MISSING antes de cualquier I/O.
+            api_key = check_api_key(api_key if api_key is not None else "")
+            headers["Authorization"] = f"Bearer {api_key}"
+        headers["Accept"] = "application/json"
+        headers["User-Agent"] = self._config.user_agent()
         content = None
         if body is not None:
             content = encode_body(body)
@@ -303,13 +315,14 @@ class APIRequestor:
 
         key: str | None = None
         if method == "POST":
-            # Una sola clave por llamada, la misma en cada reintento: nunca se ejecuta dos veces.
-            key = (
-                validate_idempotency_key(idempotency_key)
-                if idempotency_key is not None
-                else str(uuid.uuid4())
-            )
-            headers["Idempotency-Key"] = key
+            if idempotency_key is not None:
+                key = validate_idempotency_key(idempotency_key)
+            elif authenticated:
+                # Una sola clave por llamada, la misma en cada reintento: nunca se ejecuta dos
+                # veces.
+                key = str(uuid.uuid4())
+            if key is not None:
+                headers["Idempotency-Key"] = key
         elif idempotency_key is not None:
             raise ValueError("La Idempotency-Key solo va en los POST.")
 
@@ -437,7 +450,7 @@ class APIRequestor:
                 "NETWORK_ERROR",
                 f"No pudimos conectarnos con la API de Raya ({type(exc).__name__}).",
             )
-        if p.method == "POST":
+        if p.idempotency_key is not None:
             message += " Reintentá con la misma Idempotency-Key: nunca se ejecuta dos veces."
         return APIConnectionError(
             message, code=code, should_retry=retryable, idempotency_key=p.idempotency_key

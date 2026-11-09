@@ -16,6 +16,7 @@ from tests.fixtures import (
     TRANSFER_LIST,
     WEBHOOK_SECRET,
 )
+from tests.fixtures_apps import ACCESS_TOKEN, USER
 from tests.helpers import OTHER_KEY, TEST_KEY, Caller, MockAPI
 
 
@@ -368,3 +369,53 @@ def test_construct_event_binds_the_client(client: rayacash.RayaClient, api: Mock
     refunded = payment.refund()
     assert refunded.status == "refunded"
     assert api.last.url.path == f"/v1/payments/{payment.id}/refund"
+
+
+# --- El access_token de una cuenta conectada vale como api_key ------------------------------------
+
+
+def test_access_token_as_api_key(api: MockAPI) -> None:
+    api.add(200, USER)
+    api.client(ACCESS_TOKEN).users.retrieve("me")
+    assert api.last.headers["authorization"] == f"Bearer {ACCESS_TOKEN}"
+
+
+def test_access_token_from_environment_and_per_request(
+    api: MockAPI, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("RAYA_SECRET_KEY", ACCESS_TOKEN)
+    api.add(200, USER)
+    api.client(None).users.retrieve("me")
+    assert api.last.headers["authorization"] == f"Bearer {ACCESS_TOKEN}"
+    api.add(200, USER)
+    api.client(TEST_KEY).users.retrieve("me", options={"api_key": ACCESS_TOKEN})
+    assert api.last.headers["authorization"] == f"Bearer {ACCESS_TOKEN}"
+
+
+def test_repr_masks_the_access_token() -> None:
+    client = rayacash.RayaClient(ACCESS_TOKEN)
+    assert (
+        repr(client) == "<RayaClient api_base='https://api.raya.cash' api_key='raya_at_live_…fG9h'>"
+    )
+    assert ACCESS_TOKEN not in repr(client)
+
+
+@pytest.mark.parametrize(
+    ("key", "code", "mentions"),
+    [
+        ("", "API_KEY_MISSING", ("raya_sk_live_", "raya_at_live_", "RAYA_SECRET_KEY")),
+        (
+            "raya_pk_live_" + "a" * 48,
+            "API_KEY_PUBLISHABLE_NOT_ALLOWED",
+            ("raya_sk_live_", "raya_at_live_"),
+        ),
+        (ACCESS_TOKEN + " ", "API_KEY_INVALID", ("Developers › API Keys", "access_token")),
+        (ACCESS_TOKEN + "\n", "API_KEY_INVALID", ("access_token",)),
+    ],
+)
+def test_key_messages_name_both_credentials(key: str, code: str, mentions: tuple[str, ...]) -> None:
+    with pytest.raises(rayacash.AuthenticationError) as info:
+        rayacash.RayaClient(key)
+    assert info.value.code == code
+    for text in mentions:
+        assert text in info.value.message

@@ -9,9 +9,11 @@ import httpx
 from typing_extensions import Self
 
 from rayacash._balance_service import BalanceService
+from rayacash._checkout_service import CheckoutService
 from rayacash._encoding import encode_query
 from rayacash._event import Event
 from rayacash._list_object import ListObject
+from rayacash._oauth_service import OAuthService
 from rayacash._payment_service import PaymentService
 from rayacash._raya_object import RayaObject
 from rayacash._request_options import RequestOptions, validate_options
@@ -28,6 +30,7 @@ from rayacash._requestor import (
     validate_max_network_retries,
 )
 from rayacash._transfer_service import TransferService
+from rayacash._user_service import UserService
 from rayacash._util import AppInfo, mask_key, user_agent, validate_app_info
 from rayacash._webhook import DEFAULT_TOLERANCE, Payload, construct_event
 
@@ -78,8 +81,13 @@ class RayaClient:
     La clave secreta va solo en tu servidor, leída de una variable de entorno: nunca en el
     navegador, en una app mobile ni en el repositorio.
 
-    :param api_key: Tu clave secreta (``raya_sk_live_…``). Si no la pasás, se lee de la variable
-        de entorno ``RAYA_SECRET_KEY``.
+    Si construís una app que cobra a nombre de otras cuentas, un ``RayaClient`` con el
+    ``access_token`` de la cuenta conectada (``raya_at_live_…``) opera por ella:
+    ``client.users`` y ``client.checkout.orders``. ``client.oauth.token()`` no necesita clave.
+
+    :param api_key: Tu clave secreta (``raya_sk_live_…``) o el access_token de una cuenta
+        conectada (``raya_at_live_…``). Si no la pasás, se lee de la variable de entorno
+        ``RAYA_SECRET_KEY``.
     :param api_base: Por defecto ``https://api.raya.cash``.
     :param timeout: Segundos por intento (por defecto 65, con 10 para conectar) o un
         ``httpx.Timeout``. El servidor corta a los 60 s y crear un pago puede tardar ~40 s.
@@ -94,6 +102,9 @@ class RayaClient:
     balance: BalanceService
     transfers: TransferService
     payments: PaymentService
+    oauth: OAuthService
+    users: UserService
+    checkout: CheckoutService
 
     def __init__(
         self,
@@ -131,6 +142,9 @@ class RayaClient:
         self.balance = BalanceService(self._requestor)
         self.transfers = TransferService(self._requestor)
         self.payments = PaymentService(self._requestor)
+        self.oauth = OAuthService(self._requestor)
+        self.users = UserService(self._requestor)
+        self.checkout = CheckoutService(self._requestor)
 
     def raw_request(
         self,

@@ -8,6 +8,7 @@ import pytest
 
 import rayacash
 from rayacash import _global, _retry
+from tests.fixtures_apps import ACCESS_TOKEN
 from tests.helpers import Caller, MockAPI
 
 _GLOBAL_DEFAULTS = {
@@ -70,6 +71,14 @@ def api() -> MockAPI:
 @pytest.fixture
 def client(api: MockAPI) -> Iterator[rayacash.RayaClient]:
     raya = api.client()
+    yield raya
+    raya.close()
+
+
+@pytest.fixture
+def connected(api: MockAPI) -> Iterator[rayacash.RayaClient]:
+    """Un cliente con el access_token de una cuenta conectada (users y checkout)."""
+    raya = api.client(ACCESS_TOKEN)
     yield raya
     raya.close()
 

@@ -122,11 +122,14 @@ def user_agent(app_info: AppInfo | None) -> str:
     return ua
 
 
+_KEY_PREFIXES = ("raya_sk_live_", "raya_at_live_")
+
+
 def mask_key(key: str | None) -> str | None:
-    """raya_sk_live_…AbCd: para repr y logs. Nunca mostramos la clave entera."""
+    """raya_sk_live_…AbCd (o raya_at_live_…AbCd): para repr y logs. Nunca la clave entera."""
     if not key:
         return None
-    prefix = "raya_sk_live_" if key.startswith("raya_sk_live_") else ""
+    prefix = next((p for p in _KEY_PREFIXES if key.startswith(p)), "")
     if len(key) <= len(prefix) + 8:
         return prefix + "…"
     return f"{prefix}…{key[-4:]}"
