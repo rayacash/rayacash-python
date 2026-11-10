@@ -122,11 +122,16 @@ def user_agent(app_info: AppInfo | None) -> str:
     return ua
 
 
-_KEY_PREFIXES = ("raya_sk_live_", "raya_at_live_")
+# Los prefijos que se conservan al enmascarar: la clave secreta, el access_token de una cuenta
+# conectada y el de la cuenta de prueba de una app (Developers › Apps › tu app › Test).
+_KEY_PREFIXES = ("raya_sk_live_", "raya_at_live_", "raya_at_test_")
 
 
 def mask_key(key: str | None) -> str | None:
-    """raya_sk_live_…AbCd (o raya_at_live_…AbCd): para repr y logs. Nunca la clave entera."""
+    """raya_sk_live_…AbCd (o raya_at_live_…AbCd, o raya_at_test_…AbCd): para repr y logs.
+
+    Nunca la clave ni el access_token enteros.
+    """
     if not key:
         return None
     prefix = next((p for p in _KEY_PREFIXES if key.startswith(p)), "")

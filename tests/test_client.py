@@ -16,7 +16,7 @@ from tests.fixtures import (
     TRANSFER_LIST,
     WEBHOOK_SECRET,
 )
-from tests.fixtures_apps import ACCESS_TOKEN, USER
+from tests.fixtures_apps import ACCESS_TOKEN, TEST_MODE_ACCESS_TOKEN, USER
 from tests.helpers import OTHER_KEY, TEST_KEY, Caller, MockAPI
 
 
@@ -398,6 +398,21 @@ def test_repr_masks_the_access_token() -> None:
         repr(client) == "<RayaClient api_base='https://api.raya.cash' api_key='raya_at_live_…fG9h'>"
     )
     assert ACCESS_TOKEN not in repr(client)
+
+
+def test_test_mode_access_token_is_a_key_masked_with_its_prefix(api: MockAPI) -> None:
+    # El access_token de la cuenta de prueba de una app (Developers › Apps › tu app › Test) vale
+    # como el de una cuenta conectada, y la máscara conserva su prefijo y sus últimos 4.
+    api.add(200, USER)
+    client = api.client(TEST_MODE_ACCESS_TOKEN)
+    client.users.retrieve("me")
+    assert api.last.headers["authorization"] == f"Bearer {TEST_MODE_ACCESS_TOKEN}"
+    assert (
+        repr(client) == "<RayaClient api_base='https://api.raya.cash' api_key='raya_at_test_…L0sA'>"
+    )
+    assert TEST_MODE_ACCESS_TOKEN not in repr(client)
+    # Con 8 caracteres o menos después del prefijo, solo el prefijo.
+    assert repr(rayacash.RayaClient("raya_at_test_12345678")).endswith("api_key='raya_at_test_…'>")
 
 
 @pytest.mark.parametrize(

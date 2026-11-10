@@ -1,4 +1,4 @@
-"""Los objetos de ejemplo de Apps y cuentas conectadas (api.md › Checkout y Usuarios).
+"""Los objetos de ejemplo de Raya Connect (api.md › Connect y Usuarios).
 
 Son los mismos JSON que muestra raya.cash/api (utils/apiReferenceRequests.ts y
 apiReferenceContent.ts de la web): los tres SDKs testean con los mismos vectores.
@@ -19,12 +19,15 @@ NOTIFICATION_URL = "we_3fN8kQ2vX7mB1pR5tZ9cW4yD"
 # La cuenta conectada: el user_id del access_token.
 USER_ID = "9d4f2b7e-3c61-4e0a-9b8f-2a5c7d1e6f40"
 ACCESS_TOKEN = "raya_at_live_4mQ8sT2vX7bN1kR5wZ9cH3jLpD6fG0aEyU8iO2pA5sD7fG9h"
+# El access_token de la cuenta de prueba de la app (Developers › Apps › tu app › Test): el
+# prefijo de prueba, el client_id y 32 caracteres base62. Sintético, como los demás.
+TEST_MODE_ACCESS_TOKEN = "raya_at_test_" + APP_CLIENT_ID + "pR5tZ9cW4yD3fN8kQ2vX7mB1hJ6gL0sA"
 
 OAUTH_TOKEN: dict[str, Any] = {
     "object": "oauth_token",
     "access_token": ACCESS_TOKEN,
     "token_type": "Bearer",
-    "scope": "checkout profile",
+    "scope": "orders profile",
     "user_id": USER_ID,
     "expires_in": None,
     "refresh_token": None,
@@ -62,7 +65,7 @@ USER: dict[str, Any] = {
 }
 
 # Una empresa conectada: identification CUIT, business con representante y sin negocio
-# configurado todavía (merchant None: no se le pueden crear checkouts).
+# configurado todavía (merchant None: se lo creamos con su primer pago).
 USER_BUSINESS: dict[str, Any] = {
     **USER,
     "id": "5b1e7c3a-9d2f-4e6b-8a0c-7f3d1b9e2c54",
@@ -87,13 +90,14 @@ USER_BUSINESS: dict[str, Any] = {
     "merchant": None,
 }
 
-CHECKOUT_ID = "e7b3a9c2-4d1f-4a8e-b6c0-5f2d9e8a7b61"
+ORDER_ID = "e7b3a9c2-4d1f-4a8e-b6c0-5f2d9e8a7b61"
 
-# Recién creado: un ítem de 45000 con una comisión de 500 para la app; a la cuenta conectada le
-# quedan 44500. Sin description, queda el title del ítem.
-CHECKOUT_PENDING: dict[str, Any] = {
-    "id": CHECKOUT_ID,
-    "object": "checkout",
+# Un pago de Raya Connect recién creado: un ítem de 45000 con una comisión de 500 para la app; a
+# la cuenta conectada le quedan 44500. Sin description, queda el title del ítem. La página de
+# pago sigue en /checkout/<id>.
+ORDER_PENDING: dict[str, Any] = {
+    "id": ORDER_ID,
+    "object": "connect.order",
     "status": "pending",
     "amount": 45000,
     "fee": 500,
@@ -105,7 +109,7 @@ CHECKOUT_PENDING: dict[str, Any] = {
     "external_reference": "pedido-1042",
     "account": USER_ID,
     "bank_transfer": {"cvu": "0000123390456538582824", "alias": "raya.cash.ejemplo"},
-    "checkout_url": f"https://raya.cash/checkout/{CHECKOUT_ID}",
+    "checkout_url": f"https://raya.cash/checkout/{ORDER_ID}",
     "back_urls": {
         "success": "https://tienda.example.com/pedidos/1042",
         "failure": "https://tienda.example.com/pedidos/1042/error",
@@ -122,8 +126,8 @@ CHECKOUT_PENDING: dict[str, Any] = {
 }
 
 # Pagado: pagó la misma cuenta que el pago de ejemplo; fee y net_amount no cambian.
-CHECKOUT_SUCCEEDED: dict[str, Any] = {
-    **CHECKOUT_PENDING,
+ORDER_SUCCEEDED: dict[str, Any] = {
+    **ORDER_PENDING,
     "status": "succeeded",
     "amount_received": 45000,
     "payer": {
@@ -135,17 +139,17 @@ CHECKOUT_SUCCEEDED: dict[str, Any] = {
 }
 
 # Reembolsado desde la app: se devuelve todo y la comisión se revierte; paid_at se mantiene.
-CHECKOUT_REFUNDED: dict[str, Any] = {
-    **CHECKOUT_SUCCEEDED,
+ORDER_REFUNDED: dict[str, Any] = {
+    **ORDER_SUCCEEDED,
     "status": "refunded",
     "refunded_at": "2026-10-24T17:20:00Z",
 }
 
-EVENT_CHECKOUT_SUCCEEDED: dict[str, Any] = {
+EVENT_ORDER_SUCCEEDED: dict[str, Any] = {
     "id": "evt_7pK2mT9xB4vN6rQ1sW8cH5jL",
     "object": "event",
-    "type": "checkout.succeeded",
+    "type": "connect.order.succeeded",
     "api_version": "2026-10-23",
     "created_at": "2026-10-24T16:07:41Z",
-    "data": {"object": CHECKOUT_SUCCEEDED},
+    "data": {"object": ORDER_SUCCEEDED},
 }

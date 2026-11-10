@@ -114,7 +114,8 @@ class User(RayaObject):
     #: Cuándo la verificó (ISO 8601 en UTC).
     verified_at: str | None
     business: Business | None
-    #: ``None`` si la cuenta todavía no configuró su negocio (no se le pueden crear checkouts).
+    #: ``None`` hasta que la cuenta configure su negocio o le crees el primer pago (ahí se lo
+    #: creamos con sus datos legales): no hace falta para cobrarle.
     merchant: Merchant | None
     created_at: str
 

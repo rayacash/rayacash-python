@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, cast, overload
 
-from typing_extensions import Literal
+from typing_extensions import Literal, deprecated
 
-from rayacash._checkout import Checkout
+from rayacash._connect_order import ConnectOrder
+from rayacash._deprecated import accepts_checkout_id, accepts_checkout_id_async
 from rayacash._encoding import Amount, canonical_amount, path_id
 from rayacash._request_options import RequestOptions
 
@@ -57,7 +58,7 @@ def _create_body(
         )
     if expires_in is not None and (isinstance(expires_in, bool) or not isinstance(expires_in, int)):
         raise TypeError(
-            "expires_in tiene que ser un int: los segundos hasta que vence el checkout "
+            "expires_in tiene que ser un int: los segundos hasta que vence el pago "
             "(de 300 a 864000)."
         )
     return {
@@ -73,14 +74,17 @@ def _create_body(
     }
 
 
-def _order_path(checkout_id: str) -> str:
-    return f"/v1/checkout/orders/{path_id('checkout_id', checkout_id)}"
+def _order_path(order_id: str) -> str:
+    return f"/v1/connect/orders/{path_id('order_id', order_id)}"
 
 
-class CheckoutOrderService:
-    """``client.checkout.orders``: los checkouts que tu app crea a nombre de una cuenta conectada.
+class ConnectOrderService:
+    """``client.connect.orders``: los pagos que tu app crea a nombre de una cuenta conectada.
 
     Usá un ``RayaClient`` con el access_token de esa cuenta (``raya_at_live_…``), no con tu clave.
+
+    ``retrieve`` y ``refund`` aceptan también ``checkout_id=``, el nombre de la 1.1.0 (deprecado,
+    se va en la 2.0.0): por eso tienen un ``@overload`` con ``@deprecated``.
     """
 
     def __init__(self, requestor: APIRequestor) -> None:
@@ -100,14 +104,14 @@ class CheckoutOrderService:
         expires_in: int | None = None,
         idempotency_key: str | None = None,
         options: RequestOptions | None = None,
-    ) -> Checkout:
-        """Crea un checkout a nombre de la cuenta conectada (``POST /v1/checkout/orders``).
+    ) -> ConnectOrder:
+        """Crea un pago a nombre de la cuenta conectada (``POST /v1/connect/orders``).
 
         Nace ``pending``, con un CVU y un alias exclusivos. Mandá a quien paga a ``checkout_url``
         (o mostrale ``bank_transfer``). Al acreditarse,
         ``net_amount`` se liquida a la cuenta conectada y ``fee`` a la tuya; te avisamos con
-        ``checkout.succeeded`` (y a la cuenta conectada, con ``payment.succeeded``). Puede tardar
-        hasta 40 s si damos de alta un CVU nuevo (el timeout por defecto es 65 s).
+        ``connect.order.succeeded`` (y a la cuenta conectada, con ``payment.succeeded``). Puede
+        tardar hasta 40 s si damos de alta un CVU nuevo (el timeout por defecto es 65 s).
 
         :param items: De 1 a 20 dicts ``{"title", "quantity", "unit_price"}``; el total es la
             suma de ``quantity × unit_price``. ``unit_price`` en pesos, hasta 2 decimales.
@@ -121,17 +125,17 @@ class CheckoutOrderService:
         :param auto_return: ``"approved"`` para que quien paga vuelva solo a
             ``back_urls.success`` al acreditarse.
         :param notification_url: El id (``we_…``) o la URL de un destino tuyo de Developers ›
-            Webhooks, que recibe los ``checkout.*`` de este checkout. Sin él, los suscriptos.
+            Webhooks, que recibe los ``connect.order.*`` de este pago. Sin él, los suscriptos.
         :param expires_in: Segundos hasta que vence, de 300 a 864000 (10 días). Por defecto,
             el plazo del comercio conectado.
         :param idempotency_key: Recomendada: guardala con el pedido y reusala si reintentás.
             Si no la pasás, generamos una que protege los reintentos de esta llamada.
         """
         return cast(
-            Checkout,
+            ConnectOrder,
             self._requestor.request(
                 "POST",
-                "/v1/checkout/orders",
+                "/v1/connect/orders",
                 body=_create_body(
                     items,
                     fee,
@@ -145,7 +149,7 @@ class CheckoutOrderService:
                 ),
                 idempotency_key=idempotency_key,
                 options=options,
-                expected=Checkout,
+                expected=ConnectOrder,
             ),
         )
 
@@ -163,13 +167,13 @@ class CheckoutOrderService:
         expires_in: int | None = None,
         idempotency_key: str | None = None,
         options: RequestOptions | None = None,
-    ) -> Checkout:
+    ) -> ConnectOrder:
         """Como ``create()``, para asyncio."""
         return cast(
-            Checkout,
+            ConnectOrder,
             await self._requestor.request_async(
                 "POST",
-                "/v1/checkout/orders",
+                "/v1/connect/orders",
                 body=_create_body(
                     items,
                     fee,
@@ -183,79 +187,142 @@ class CheckoutOrderService:
                 ),
                 idempotency_key=idempotency_key,
                 options=options,
-                expected=Checkout,
+                expected=ConnectOrder,
             ),
         )
 
-    def retrieve(self, checkout_id: str, *, options: RequestOptions | None = None) -> Checkout:
-        """Un checkout de tu app a nombre de esta cuenta (``GET /v1/checkout/orders/:id``)."""
+    @overload
+    def retrieve(self, order_id: str, *, options: RequestOptions | None = None) -> ConnectOrder: ...
+
+    @overload
+    @deprecated("checkout_id está deprecado desde la 1.2.0 y se va en la 2.0.0: usá order_id.")
+    def retrieve(
+        self, *, checkout_id: str, options: RequestOptions | None = None
+    ) -> ConnectOrder: ...
+
+    @accepts_checkout_id
+    def retrieve(self, order_id: str, *, options: RequestOptions | None = None) -> ConnectOrder:
+        """Un pago de tu app a nombre de esta cuenta (``GET /v1/connect/orders/:id``)."""
         return cast(
-            Checkout,
+            ConnectOrder,
             self._requestor.request(
-                "GET", _order_path(checkout_id), options=options, expected=Checkout
+                "GET", _order_path(order_id), options=options, expected=ConnectOrder
             ),
         )
 
+    @overload
     async def retrieve_async(
-        self, checkout_id: str, *, options: RequestOptions | None = None
-    ) -> Checkout:
+        self, order_id: str, *, options: RequestOptions | None = None
+    ) -> ConnectOrder: ...
+
+    @overload
+    @deprecated("checkout_id está deprecado desde la 1.2.0 y se va en la 2.0.0: usá order_id.")
+    async def retrieve_async(
+        self, *, checkout_id: str, options: RequestOptions | None = None
+    ) -> ConnectOrder: ...
+
+    @accepts_checkout_id_async
+    async def retrieve_async(
+        self, order_id: str, *, options: RequestOptions | None = None
+    ) -> ConnectOrder:
         """Como ``retrieve()``, para asyncio."""
         return cast(
-            Checkout,
+            ConnectOrder,
             await self._requestor.request_async(
-                "GET", _order_path(checkout_id), options=options, expected=Checkout
+                "GET", _order_path(order_id), options=options, expected=ConnectOrder
             ),
         )
 
+    @overload
     def refund(
         self,
-        checkout_id: str,
+        order_id: str,
         *,
         idempotency_key: str | None = None,
         options: RequestOptions | None = None,
-    ) -> Checkout:
+    ) -> ConnectOrder: ...
+
+    @overload
+    @deprecated("checkout_id está deprecado desde la 1.2.0 y se va en la 2.0.0: usá order_id.")
+    def refund(
+        self,
+        *,
+        checkout_id: str,
+        idempotency_key: str | None = None,
+        options: RequestOptions | None = None,
+    ) -> ConnectOrder: ...
+
+    @accepts_checkout_id
+    def refund(
+        self,
+        order_id: str,
+        *,
+        idempotency_key: str | None = None,
+        options: RequestOptions | None = None,
+    ) -> ConnectOrder:
         """Devuelve todo lo recibido a la cuenta desde la que se pagó (``POST …/refund``).
 
-        Solo checkouts ``succeeded``, hasta 30 días después de ``paid_at``. Es total: la cuenta
+        Solo pagos ``succeeded``, hasta 30 días después de ``paid_at``. Es total: la cuenta
         conectada devuelve ``net_amount`` y tu comisión se revierte. Si la confirmación tarda,
         sale ``APIError`` con ``code == "BANK_UNAVAILABLE"``: reintentá más tarde con la misma
-        ``idempotency_key`` (nunca se manda dos veces) o esperá el webhook ``checkout.refunded``.
+        ``idempotency_key`` (nunca se manda dos veces) o esperá el webhook
+        ``connect.order.refunded``.
         """
         return cast(
-            Checkout,
+            ConnectOrder,
             self._requestor.request(
                 "POST",
-                _order_path(checkout_id) + "/refund",
+                _order_path(order_id) + "/refund",
                 idempotency_key=idempotency_key,
                 options=options,
-                expected=Checkout,
+                expected=ConnectOrder,
             ),
         )
 
+    @overload
     async def refund_async(
         self,
-        checkout_id: str,
+        order_id: str,
         *,
         idempotency_key: str | None = None,
         options: RequestOptions | None = None,
-    ) -> Checkout:
+    ) -> ConnectOrder: ...
+
+    @overload
+    @deprecated("checkout_id está deprecado desde la 1.2.0 y se va en la 2.0.0: usá order_id.")
+    async def refund_async(
+        self,
+        *,
+        checkout_id: str,
+        idempotency_key: str | None = None,
+        options: RequestOptions | None = None,
+    ) -> ConnectOrder: ...
+
+    @accepts_checkout_id_async
+    async def refund_async(
+        self,
+        order_id: str,
+        *,
+        idempotency_key: str | None = None,
+        options: RequestOptions | None = None,
+    ) -> ConnectOrder:
         """Como ``refund()``, para asyncio."""
         return cast(
-            Checkout,
+            ConnectOrder,
             await self._requestor.request_async(
                 "POST",
-                _order_path(checkout_id) + "/refund",
+                _order_path(order_id) + "/refund",
                 idempotency_key=idempotency_key,
                 options=options,
-                expected=Checkout,
+                expected=ConnectOrder,
             ),
         )
 
 
-class CheckoutService:
-    """``client.checkout``: hoy, ``client.checkout.orders``."""
+class ConnectService:
+    """``client.connect``: Raya Connect. Hoy, ``client.connect.orders``."""
 
-    orders: CheckoutOrderService
+    orders: ConnectOrderService
 
     def __init__(self, requestor: APIRequestor) -> None:
-        self.orders = CheckoutOrderService(requestor)
+        self.orders = ConnectOrderService(requestor)

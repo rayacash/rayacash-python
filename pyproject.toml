@@ -5,13 +5,13 @@ build-backend = "hatchling.build"
 [project]
 name = "rayacash"
 dynamic = ["version"]
-description = "SDK oficial de Python para la API de Raya Cash: pagos por transferencia, transferencias, balance, webhooks y checkouts de apps a nombre de cuentas conectadas."
+description = "SDK oficial de Python para la API de Raya Cash: pagos por transferencia, transferencias, balance, webhooks y Raya Connect (pagos de apps a nombre de cuentas conectadas)."
 readme = "README.md"
 requires-python = ">=3.9"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "Raya Cash", email = "soporte@raya.cash" }]
-keywords = ["raya", "raya cash", "pagos", "transferencias", "cvu", "cbu", "argentina", "api", "sdk", "oauth", "checkout", "marketplace"]
+keywords = ["raya", "raya cash", "pagos", "transferencias", "cvu", "cbu", "argentina", "api", "sdk", "oauth", "connect", "marketplace"]
 classifiers = [
   "Development Status :: 5 - Production/Stable",
   "Framework :: AsyncIO",

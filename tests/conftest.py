@@ -77,7 +77,7 @@ def client(api: MockAPI) -> Iterator[rayacash.RayaClient]:
 
 @pytest.fixture
 def connected(api: MockAPI) -> Iterator[rayacash.RayaClient]:
-    """Un cliente con el access_token de una cuenta conectada (users y checkout)."""
+    """Un cliente con el access_token de una cuenta conectada (users y connect)."""
     raya = api.client(ACCESS_TOKEN)
     yield raya
     raya.close()

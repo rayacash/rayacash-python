@@ -7,8 +7,9 @@ from __future__ import annotations
 
 from decimal import Decimal
 from typing import Optional, Union
+from unittest import mock
 
-from typing_extensions import assert_type
+from typing_extensions import Literal, assert_type
 
 import rayacash
 
@@ -44,7 +45,7 @@ def client_style(client: rayacash.RayaClient) -> None:
     assert_type(event, rayacash.Event)
     assert_type(
         event.data.object,
-        Union[rayacash.Transfer, rayacash.Payment, rayacash.Checkout, rayacash.RayaObject],
+        Union[rayacash.Transfer, rayacash.Payment, rayacash.ConnectOrder, rayacash.RayaObject],
     )
 
 
@@ -65,23 +66,24 @@ def connected_app_style(client: rayacash.RayaClient) -> None:
     if user.business is not None:
         assert_type(user.business.representative, Optional[rayacash.User.Business.Representative])
 
-    checkout = client.checkout.orders.create(
+    order = client.connect.orders.create(
         items=[{"title": "Pedido 1042", "quantity": 1, "unit_price": Decimal("45000")}],
         fee=500,
         back_urls={"success": "https://tienda.example.com/pedidos/1042"},
         auto_return="approved",
     )
-    assert_type(checkout, rayacash.Checkout)
-    assert_type(checkout.status, rayacash.CheckoutStatus)
-    assert_type(checkout.fee, float)
-    assert_type(checkout.back_urls, rayacash.Checkout.BackUrls)
-    assert_type(checkout.back_urls.success, Optional[str])
-    assert_type(checkout.payer, Optional[rayacash.Checkout.Payer])
-    item: rayacash.Checkout.Item = checkout["items"][0]  # checkout.items es dict.items()
+    assert_type(order, rayacash.ConnectOrder)
+    assert_type(order.object, Literal["connect.order", "checkout"])  # "checkout": legacy (1.1.0)
+    assert_type(order.status, rayacash.ConnectOrderStatus)
+    assert_type(order.fee, float)
+    assert_type(order.back_urls, rayacash.ConnectOrder.BackUrls)
+    assert_type(order.back_urls.success, Optional[str])
+    assert_type(order.payer, Optional[rayacash.ConnectOrder.Payer])
+    item: rayacash.ConnectOrder.Item = order["items"][0]  # order.items es dict.items()
     assert_type(item.unit_price, float)
-    assert_type(client.checkout.orders.retrieve("id"), rayacash.Checkout)
-    assert_type(client.checkout.orders.refund("id", idempotency_key="r"), rayacash.Checkout)
-    assert_type(checkout.refund(), rayacash.Checkout)
+    assert_type(client.connect.orders.retrieve("id"), rayacash.ConnectOrder)
+    assert_type(client.connect.orders.refund("id", idempotency_key="r"), rayacash.ConnectOrder)
+    assert_type(order.refund(), rayacash.ConnectOrder)
 
 
 async def async_style(client: rayacash.RayaClient) -> None:
@@ -96,8 +98,9 @@ async def async_style(client: rayacash.RayaClient) -> None:
         rayacash.OAuthToken,
     )
     assert_type(await client.users.retrieve_async("me"), rayacash.User)
-    assert_type(await client.checkout.orders.create_async(items=[]), rayacash.Checkout)
-    assert_type(await client.checkout.orders.refund_async("id"), rayacash.Checkout)
+    assert_type(await client.connect.orders.create_async(items=[]), rayacash.ConnectOrder)
+    assert_type(await client.connect.orders.retrieve_async("id"), rayacash.ConnectOrder)
+    assert_type(await client.connect.orders.refund_async("id"), rayacash.ConnectOrder)
 
 
 def global_style() -> None:
@@ -112,23 +115,63 @@ def global_style() -> None:
     assert_type(rayacash.Payment.refund("id"), rayacash.Payment)
     assert_type(rayacash.OAuth.token("id", "secret", "code", "https://x/cb"), rayacash.OAuthToken)
     assert_type(rayacash.User.retrieve("me"), rayacash.User)
-    checkout = rayacash.Checkout.create(items=[{"title": "x", "quantity": 1, "unit_price": 1}])
-    assert_type(checkout, rayacash.Checkout)
-    assert_type(rayacash.Checkout.retrieve("id"), rayacash.Checkout)
-    assert_type(checkout.refund(), rayacash.Checkout)
-    assert_type(rayacash.Checkout.refund("id"), rayacash.Checkout)
+    order = rayacash.ConnectOrder.create(items=[{"title": "x", "quantity": 1, "unit_price": 1}])
+    assert_type(order, rayacash.ConnectOrder)
+    assert_type(rayacash.ConnectOrder.retrieve("id"), rayacash.ConnectOrder)
+    assert_type(order.refund(), rayacash.ConnectOrder)
+    assert_type(rayacash.ConnectOrder.refund("id"), rayacash.ConnectOrder)
 
 
-async def global_async_style(payment: rayacash.Payment, checkout: rayacash.Checkout) -> None:
+async def global_async_style(payment: rayacash.Payment, order: rayacash.ConnectOrder) -> None:
     assert_type(await payment.refund_async(), rayacash.Payment)
     assert_type(await rayacash.Payment.refund_async("id"), rayacash.Payment)
-    assert_type(await checkout.refund_async(), rayacash.Checkout)
-    assert_type(await rayacash.Checkout.refund_async("id"), rayacash.Checkout)
+    assert_type(await order.refund_async(), rayacash.ConnectOrder)
+    assert_type(await rayacash.ConnectOrder.refund_async("id"), rayacash.ConnectOrder)
+    assert_type(await rayacash.ConnectOrder.create_async(items=[]), rayacash.ConnectOrder)
+    assert_type(await rayacash.ConnectOrder.retrieve_async("id"), rayacash.ConnectOrder)
     assert_type(
         await rayacash.OAuth.token_async("id", "secret", "code", "https://x/cb"),
         rayacash.OAuthToken,
     )
     assert_type(await rayacash.User.retrieve_async("me"), rayacash.User)
+
+
+def code_written_for_1_1_0(client: rayacash.RayaClient, event: rayacash.Event) -> None:
+    """Los nombres de la 1.1.0 siguen tipando (alias deprecados hasta la 2.0.0)."""
+    checkout: rayacash.Checkout = client.checkout.orders.create(items=[], fee=500)
+    assert_type(checkout, rayacash.ConnectOrder)
+    status: rayacash.CheckoutStatus = checkout.status
+    assert_type(status, rayacash.ConnectOrderStatus)
+    item: rayacash.Checkout.Item = checkout["items"][0]
+    assert_type(item, rayacash.ConnectOrder.Item)
+    assert_type(checkout.payer, Optional[rayacash.Checkout.Payer])
+    assert_type(client.checkout.orders.retrieve(checkout_id="id"), rayacash.Checkout)
+    assert_type(client.checkout.orders.refund(checkout.id, idempotency_key="r"), rayacash.Checkout)
+    assert_type(
+        client.connect.orders.refund(checkout_id="id", idempotency_key="r"), rayacash.Checkout
+    )
+    assert_type(rayacash.Checkout.create(items=[]), rayacash.ConnectOrder)
+    assert_type(rayacash.Checkout.retrieve(checkout_id="id"), rayacash.ConnectOrder)
+    assert_type(rayacash.Checkout.refund(checkout_id="id"), rayacash.ConnectOrder)
+    assert_type(rayacash.Checkout.refund("id"), rayacash.ConnectOrder)
+    assert_type(checkout.refund(), rayacash.ConnectOrder)
+    if event.type == "checkout.succeeded" and isinstance(event.data.object, rayacash.Checkout):
+        assert_type(event.data.object, rayacash.ConnectOrder)
+    # En la 1.1.0 era un atributo común: se puede reemplazar (también con un mock) y borrar.
+    client.checkout = mock.MagicMock()
+    client.checkout = client.connect
+    del client.checkout
+
+
+async def code_written_for_1_1_0_async(client: rayacash.RayaClient) -> None:
+    assert_type(await client.checkout.orders.create_async(items=[]), rayacash.Checkout)
+    assert_type(
+        await client.checkout.orders.retrieve_async(checkout_id="id"), rayacash.ConnectOrder
+    )
+    assert_type(await client.connect.orders.refund_async(checkout_id="id"), rayacash.ConnectOrder)
+    assert_type(await rayacash.Checkout.retrieve_async(checkout_id="id"), rayacash.ConnectOrder)
+    assert_type(await rayacash.Checkout.refund_async(checkout_id="id"), rayacash.ConnectOrder)
+    assert_type(await rayacash.Checkout.create_async(items=[]), rayacash.ConnectOrder)
 
 
 def errors(error: rayacash.RayaError) -> None:

@@ -10,8 +10,9 @@ import pytest
 import rayacash
 from rayacash._error import error_from_response
 
-# Los 43 códigos del contrato (api.md › Códigos de error): los 32 de siempre más los 11 de Apps y
-# cuentas conectadas, cada uno al final de su bloque HTTP, en el orden del contrato.
+# Los 43 códigos del contrato (api.md › Códigos de error): los 32 de siempre más los 11 de Raya
+# Connect (apps y cuentas conectadas), cada uno al final de su bloque HTTP, en el orden del
+# contrato.
 CATALOG: list[tuple[str, int, type[rayacash.RayaError]]] = [
     ("INVALID_JSON", 400, rayacash.InvalidRequestError),
     ("PARAMETER_MISSING", 400, rayacash.InvalidRequestError),
@@ -38,7 +39,7 @@ CATALOG: list[tuple[str, int, type[rayacash.RayaError]]] = [
     ("PAYMENT_NOT_FOUND", 404, rayacash.NotFoundError),
     ("NOT_FOUND", 404, rayacash.NotFoundError),
     ("USER_NOT_FOUND", 404, rayacash.NotFoundError),
-    ("CHECKOUT_NOT_FOUND", 404, rayacash.NotFoundError),
+    ("ORDER_NOT_FOUND", 404, rayacash.NotFoundError),
     ("METHOD_NOT_ALLOWED", 405, rayacash.InvalidRequestError),
     ("IDEMPOTENCY_KEY_REUSED", 409, rayacash.IdempotencyError),
     ("IDEMPOTENCY_KEY_IN_USE", 409, rayacash.IdempotencyError),
