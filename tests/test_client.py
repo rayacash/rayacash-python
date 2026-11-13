@@ -16,7 +16,8 @@ from tests.fixtures import (
     TRANSFER_LIST,
     WEBHOOK_SECRET,
 )
-from tests.fixtures_apps import ACCESS_TOKEN, TEST_MODE_ACCESS_TOKEN, USER
+from tests.fixtures_apps import ACCESS_TOKEN, SANDBOX_ACCESS_TOKEN, USER
+from tests.fixtures_sandbox import SANDBOX_KEY
 from tests.helpers import OTHER_KEY, TEST_KEY, Caller, MockAPI
 
 
@@ -400,19 +401,38 @@ def test_repr_masks_the_access_token() -> None:
     assert ACCESS_TOKEN not in repr(client)
 
 
-def test_test_mode_access_token_is_a_key_masked_with_its_prefix(api: MockAPI) -> None:
-    # El access_token de la cuenta de prueba de una app (Developers › Apps › tu app › Test) vale
-    # como el de una cuenta conectada, y la máscara conserva su prefijo y sus últimos 4.
+def test_sandbox_access_token_is_a_key_masked_with_its_prefix(api: MockAPI) -> None:
+    # El access_token de un usuario de prueba de un sandbox vale como el de una cuenta conectada,
+    # y la máscara conserva su prefijo y sus últimos 4.
     api.add(200, USER)
-    client = api.client(TEST_MODE_ACCESS_TOKEN)
+    client = api.client(SANDBOX_ACCESS_TOKEN)
     client.users.retrieve("me")
-    assert api.last.headers["authorization"] == f"Bearer {TEST_MODE_ACCESS_TOKEN}"
+    assert api.last.headers["authorization"] == f"Bearer {SANDBOX_ACCESS_TOKEN}"
     assert (
         repr(client) == "<RayaClient api_base='https://api.raya.cash' api_key='raya_at_test_…L0sA'>"
     )
-    assert TEST_MODE_ACCESS_TOKEN not in repr(client)
+    assert SANDBOX_ACCESS_TOKEN not in repr(client)
     # Con 8 caracteres o menos después del prefijo, solo el prefijo.
     assert repr(rayacash.RayaClient("raya_at_test_12345678")).endswith("api_key='raya_at_test_…'>")
+
+
+def test_sandbox_secret_key_is_a_key_masked_with_its_prefix(api: MockAPI) -> None:
+    # La clave secreta de prueba de un sandbox es el par de la real: va igual, en Authorization,
+    # y la máscara conserva su prefijo y sus últimos 4.
+    api.add(200, BALANCE)
+    client = api.client(SANDBOX_KEY)
+    client.balance.retrieve()
+    assert api.last.headers["authorization"] == f"Bearer {SANDBOX_KEY}"
+    assert (
+        repr(client) == "<RayaClient api_base='https://api.raya.cash' api_key='raya_sk_test_…IJKL'>"
+    )
+    assert SANDBOX_KEY not in repr(client)
+    assert repr(rayacash.RayaClient("raya_sk_test_12345678")).endswith("api_key='raya_sk_test_…'>")
+    # La pública de prueba se rechaza antes de mandar nada, como la real.
+    with pytest.raises(rayacash.AuthenticationError) as info:
+        rayacash.RayaClient("raya_pk_test_" + "a" * 48)
+    assert info.value.code == "API_KEY_PUBLISHABLE_NOT_ALLOWED"
+    assert len(api.requests) == 1
 
 
 @pytest.mark.parametrize(

@@ -15,7 +15,9 @@ from rayacash._raya_object import RayaObject
 from rayacash._request_options import RequestOptions
 
 if TYPE_CHECKING:
+    from rayacash._connect_order import ConnectOrder
     from rayacash._payment_service import PaymentService
+    from rayacash._sandbox_helpers_service import SandboxPaymentHelpersService
 
 PaymentStatus = Literal["pending", "succeeded", "failed", "expired", "refunded"]
 
@@ -26,6 +28,13 @@ def _service(payment: RayaObject | None = None) -> PaymentService:
 
     requestor = payment._resolve_requestor() if payment is not None else default_requestor()
     return PaymentService(requestor)
+
+
+def _sandbox_helpers() -> SandboxPaymentHelpersService:
+    from rayacash._global import default_requestor
+    from rayacash._sandbox_helpers_service import SandboxPaymentHelpersService
+
+    return SandboxPaymentHelpersService(default_requestor())
 
 
 def _payment_id(payment: RayaObject) -> str:
@@ -256,3 +265,31 @@ class Payment(RayaObject):
         cls, payment_id: str, *, options: RequestOptions | None = None
     ) -> Payment:
         return await _service().retrieve_async(payment_id, options=options)
+
+    # --- Solo en un sandbox; ver SandboxPaymentHelpersService. ---
+
+    @classmethod
+    def simulate_transfer(
+        cls,
+        payment_id: str,
+        *,
+        amount: Amount | None = None,
+        options: RequestOptions | None = None,
+    ) -> Payment | ConnectOrder:
+        """``client.test_helpers.payments.simulate_transfer()`` con la configuración global:
+        ``rayacash.api_key`` tiene que ser la clave secreta de prueba del sandbox
+        (``raya_sk_test_…``). Con el id de una orden de Raya Connect, devuelve el
+        ``ConnectOrder``."""
+        return _sandbox_helpers().simulate_transfer(payment_id, amount=amount, options=options)
+
+    @classmethod
+    async def simulate_transfer_async(
+        cls,
+        payment_id: str,
+        *,
+        amount: Amount | None = None,
+        options: RequestOptions | None = None,
+    ) -> Payment | ConnectOrder:
+        return await _sandbox_helpers().simulate_transfer_async(
+            payment_id, amount=amount, options=options
+        )

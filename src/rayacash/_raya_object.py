@@ -1,4 +1,4 @@
-"""RayaObject: un dict con acceso por atributo, como el StripeObject clásico.
+"""RayaObject: un dict con acceso por atributo.
 
 Es un ``dict`` de verdad, con los valores tal como vienen en el JSON de la API (montos int o
 float, fechas en string ISO), así que ``json.dumps(obj)`` anda. Los campos que el SDK todavía

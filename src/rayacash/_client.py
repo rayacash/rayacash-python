@@ -13,6 +13,7 @@ from rayacash._connect_order_service import ConnectService
 from rayacash._deprecated import warn_deprecated
 from rayacash._encoding import encode_query
 from rayacash._event import Event
+from rayacash._identity_verification_service import IdentityService
 from rayacash._list_object import ListObject
 from rayacash._oauth_service import OAuthService
 from rayacash._payment_service import PaymentService
@@ -30,6 +31,7 @@ from rayacash._requestor import (
     to_timeout,
     validate_max_network_retries,
 )
+from rayacash._sandbox_helpers_service import SandboxHelpersService
 from rayacash._transfer_service import TransferService
 from rayacash._user_service import UserService
 from rayacash._util import AppInfo, mask_key, user_agent, validate_app_info
@@ -84,10 +86,20 @@ class RayaClient:
 
     Si construís una app que cobra a nombre de otras cuentas, un ``RayaClient`` con el
     ``access_token`` de la cuenta conectada (``raya_at_live_…``) opera por ella:
-    ``client.users`` y ``client.connect.orders``. ``client.oauth.token()`` no necesita clave.
+    ``client.users`` y ``client.connect.orders``. El resto de la API, incluido
+    ``client.connect.payouts``, va con tu clave secreta. ``client.oauth.token()`` no necesita clave.
+
+    Para verificar la identidad de tus clientes (Identidad), ``client.identity.verifications``, con
+    tu clave secreta.
+
+    En un sandbox, con su clave secreta de prueba (``raya_sk_test_…``), la misma API crea pagos de
+    prueba y ``client.test_helpers.payments.simulate_transfer()`` simula que llegó la
+    transferencia, sin mover plata.
 
     :param api_key: Tu clave secreta (``raya_sk_live_…``) o el access_token de una cuenta
-        conectada (``raya_at_live_…``). Si no la pasás, se lee de la variable de entorno
+        conectada (``raya_at_live_…``). En un sandbox, sus pares de prueba: la clave secreta de
+        prueba (``raya_sk_test_…``) o el access_token de un usuario de prueba
+        (``raya_at_test_…``). Si no la pasás, se lee de la variable de entorno
         ``RAYA_SECRET_KEY``.
     :param api_base: Por defecto ``https://api.raya.cash``.
     :param timeout: Segundos por intento (por defecto 65, con 10 para conectar) o un
@@ -106,6 +118,8 @@ class RayaClient:
     oauth: OAuthService
     users: UserService
     connect: ConnectService
+    identity: IdentityService
+    test_helpers: SandboxHelpersService
 
     def __init__(
         self,
@@ -146,6 +160,8 @@ class RayaClient:
         self.oauth = OAuthService(self._requestor)
         self.users = UserService(self._requestor)
         self.connect = ConnectService(self._requestor)
+        self.identity = IdentityService(self._requestor)
+        self.test_helpers = SandboxHelpersService(self._requestor)
 
     @property
     # category=None: estos @deprecated son para los type checkers; el DeprecationWarning, con el
@@ -251,7 +267,8 @@ class RayaClient:
     ) -> Event:
         """Como ``rayacash.Webhook.construct_event``, con el evento ligado a este cliente.
 
-        Así, ``event.data.object.refund()`` usa la clave de este cliente.
+        Así, ``event.data.object.refund()`` (o ``.cancel()``, en una ``IdentityVerification``) usa
+        la clave de este cliente.
         """
         return construct_event(payload, sig_header, secret, tolerance, requestor=self._requestor)
 

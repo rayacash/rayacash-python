@@ -47,7 +47,8 @@ def check_api_key(key: object) -> str:
     """Rechaza antes de mandar nada lo que nunca puede andar. El formato lo valida la API.
 
     Vale tu clave secreta (``raya_sk_live_…``) o el access_token de una cuenta conectada
-    (``raya_at_live_…``): los dos van igual, en ``Authorization: Bearer``.
+    (``raya_at_live_…``): los dos van igual, en ``Authorization: Bearer``. En un sandbox, sus pares
+    de prueba (``raya_sk_test_…`` y ``raya_at_test_…``) van igual: el entorno lo decide la clave.
     """
     if not isinstance(key, str):
         raise TypeError(f"La clave tiene que ser un str, no {type(key).__name__}.")
@@ -234,8 +235,11 @@ class APIRequestor:
         options: RequestOptions | None = None,
         expected: type[RayaObject] | None = None,
         authenticated: bool = True,
+        idempotent: bool = True,
     ) -> RayaObject:
-        prepared = self._prepare(method, path, query, body, idempotency_key, options, authenticated)
+        prepared = self._prepare(
+            method, path, query, body, idempotency_key, options, authenticated, idempotent
+        )
         response = self._send(prepared)
         return self._hydrate(prepared, response, expected)
 
@@ -250,8 +254,11 @@ class APIRequestor:
         options: RequestOptions | None = None,
         expected: type[RayaObject] | None = None,
         authenticated: bool = True,
+        idempotent: bool = True,
     ) -> RayaObject:
-        prepared = self._prepare(method, path, query, body, idempotency_key, options, authenticated)
+        prepared = self._prepare(
+            method, path, query, body, idempotency_key, options, authenticated, idempotent
+        )
         response = await self._send_async(prepared)
         return self._hydrate(prepared, response, expected)
 
@@ -280,10 +287,16 @@ class APIRequestor:
         idempotency_key: str | None,
         options: RequestOptions | None,
         authenticated: bool = True,
+        idempotent: bool = True,
     ) -> _Prepared:
         """``authenticated=False`` es para ``POST /v1/oauth/token``, la única request sin
         ``Authorization``: no exige clave y no lleva ``Idempotency-Key`` (el servidor no la usa
-        ahí; el code se canjea una sola vez)."""
+        ahí; el code se canjea una sola vez).
+
+        ``idempotent=False`` es para el helper del sandbox,
+        ``POST /v1/test/payments/:id/simulate_transfer``: lleva ``Authorization``, pero no le
+        generamos ``Idempotency-Key`` porque el servidor no la usa ahí (simular dos veces el mismo
+        pago responde 409 ``PAYMENT_NOT_PENDING``)."""
         opts = validate_options(options)
         method = method.upper()
         if method not in ("GET", "POST"):
@@ -317,7 +330,7 @@ class APIRequestor:
         if method == "POST":
             if idempotency_key is not None:
                 key = validate_idempotency_key(idempotency_key)
-            elif authenticated:
+            elif authenticated and idempotent:
                 # Una sola clave por llamada, la misma en cada reintento: nunca se ejecuta dos
                 # veces.
                 key = str(uuid.uuid4())

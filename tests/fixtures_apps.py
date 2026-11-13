@@ -19,9 +19,9 @@ NOTIFICATION_URL = "we_3fN8kQ2vX7mB1pR5tZ9cW4yD"
 # La cuenta conectada: el user_id del access_token.
 USER_ID = "9d4f2b7e-3c61-4e0a-9b8f-2a5c7d1e6f40"
 ACCESS_TOKEN = "raya_at_live_4mQ8sT2vX7bN1kR5wZ9cH3jLpD6fG0aEyU8iO2pA5sD7fG9h"
-# El access_token de la cuenta de prueba de la app (Developers › Apps › tu app › Test): el
-# prefijo de prueba, el client_id y 32 caracteres base62. Sintético, como los demás.
-TEST_MODE_ACCESS_TOKEN = "raya_at_test_" + APP_CLIENT_ID + "pR5tZ9cW4yD3fN8kQ2vX7mB1hJ6gL0sA"
+# El access_token de un usuario de prueba de un sandbox, conectado a una app del sandbox: el
+# prefijo de prueba y 48 caracteres base62, como el real. Sintético, como los demás.
+SANDBOX_ACCESS_TOKEN = "raya_at_test_" + "z4Vw1Np6Hd8Jf5GcpR5tZ9cW4yD3fN8kQ2vX7mB1hJ6gL0sA"
 
 OAUTH_TOKEN: dict[str, Any] = {
     "object": "oauth_token",
@@ -143,6 +143,51 @@ ORDER_REFUNDED: dict[str, Any] = {
     **ORDER_SUCCEEDED,
     "status": "refunded",
     "refunded_at": "2026-10-24T17:20:00Z",
+}
+
+# Un payout: de la cuenta del negocio de la plataforma a un vendedor. Salen 60000 del saldo, 870.25
+# de comisión y el vendedor recibe 59129.75: la comisión del ejemplo, a propósito, no es un
+# porcentaje exacto del monto (la de cada comercio puede ser distinta). Los CVU son los demoCvu de
+# la web: "api-reference-payout-origen" y "api-reference-vendedor". El CUIT tiene el verificador
+# inválido a propósito.
+PAYOUT_ID = "4f6a1d8b-2e37-4c95-8a10-7b3e9d2c5f14"
+PAYOUT_ORIGIN_ACCOUNT = "0000123368198805021689"
+PAYOUT_DESTINATION = "0000123305838495183140"
+
+PAYOUT_PENDING: dict[str, Any] = {
+    "id": PAYOUT_ID,
+    "object": "connect.payout",
+    "status": "pending",
+    "amount": 60000,
+    "processing_fee": 870.25,
+    "net_amount": 59129.75,
+    "currency": "ARS",
+    "origin": {
+        "account": PAYOUT_ORIGIN_ACCOUNT,
+        "alias": "raya.cash.ejemplo",
+        "name": "Tienda Ejemplo",
+    },
+    "counterparty": {
+        "name": "Ana Ejemplo",
+        "tax_id": "20345678902",
+        "account": PAYOUT_DESTINATION,
+        "alias": "ana.ejemplo",
+    },
+    "reference": None,
+    "created_at": "2026-10-24T17:40:06Z",
+}
+
+PAYOUT_COMPLETED: dict[str, Any] = {
+    **PAYOUT_PENDING,
+    "status": "completed",
+    "reference": "M7Q2X9T4K1V6N3B8R5W0ZD",
+}
+
+PAYOUT_LIST: dict[str, Any] = {
+    "object": "list",
+    "data": [PAYOUT_COMPLETED],
+    "has_more": False,
+    "next_cursor": None,
 }
 
 EVENT_ORDER_SUCCEEDED: dict[str, Any] = {

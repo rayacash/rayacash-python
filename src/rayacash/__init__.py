@@ -7,7 +7,7 @@ Estilo cliente (el recomendado)::
     client = rayacash.RayaClient()  # lee la clave secreta de RAYA_SECRET_KEY
     payment = client.payments.create(amount=15000, description="Pedido #1042")
 
-Estilo global, como stripe-python::
+Estilo global, con la configuración del módulo::
 
     rayacash.api_key = os.environ["RAYA_SECRET_KEY"]
     payment = rayacash.Payment.create(amount=15000)
@@ -17,6 +17,20 @@ Raya Connect (cobrar a nombre de otra cuenta con tu comisión)::
     token = client.oauth.token(client_id, client_secret, code, redirect_uri)
     connected = rayacash.RayaClient(token.access_token)  # raya_at_live_…
     order = connected.connect.orders.create(items=[...], fee=500)
+
+Payouts a tus vendedores (con tu clave secreta, no con el access_token)::
+
+    payout = client.connect.payouts.create(amount=60000, destination=cvu, idempotency_key=key)
+
+Identidad (verificar la identidad de tus clientes, con tu clave secreta)::
+
+    verification = client.identity.verifications.create(type="document")
+    print(verification.url)  # o abrila en tu web con Identity.js (npm install rayacash-identity)
+
+En un sandbox, con su clave secreta de prueba (raya_sk_test_…), sin mover plata::
+
+    payment = client.payments.create(amount=15000)
+    payment = client.test_helpers.payments.simulate_transfer(payment.id)  # status: succeeded
 
 Referencia de la API: https://raya.cash/api
 """
@@ -35,11 +49,13 @@ from rayacash._version import VERSION
 __version__ = VERSION
 
 # --- Configuración del estilo global -------------------------------------------------------
-# Solo la usan rayacash.Balance / Transfer / Payment / OAuth / User / ConnectOrder. Un
-# RayaClient tiene la suya, salvo el logging (log y RAYA_LOG), que vale para todo el proceso.
+# Solo la usan rayacash.Balance / Transfer / Payment / OAuth / User / ConnectOrder /
+# ConnectPayout / IdentityVerification. Un RayaClient tiene la suya, salvo el logging (log y
+# RAYA_LOG), que vale para todo el proceso.
 
-#: Tu clave secreta (raya_sk_live_…) o el access_token de una cuenta conectada (raya_at_live_…).
-#: Si es None, se lee de la variable de entorno RAYA_SECRET_KEY.
+#: Tu clave secreta (raya_sk_live_…) o el access_token de una cuenta conectada (raya_at_live_…);
+#: en un sandbox, sus pares de prueba (raya_sk_test_… o raya_at_test_…). Si es None, se lee de la
+#: variable de entorno RAYA_SECRET_KEY.
 api_key: str | None = None
 api_base: str = DEFAULT_API_BASE
 max_network_retries: int = DEFAULT_MAX_NETWORK_RETRIES
@@ -68,6 +84,7 @@ def set_app_info(name: str, *, version: str | None = None, url: str | None = Non
 from rayacash._balance import Balance  # noqa: E402
 from rayacash._client import RayaClient  # noqa: E402
 from rayacash._connect_order import ConnectOrder, ConnectOrderStatus  # noqa: E402
+from rayacash._connect_payout import ConnectPayout, ConnectPayoutStatus  # noqa: E402
 from rayacash._deprecated import warn_deprecated as _warn_deprecated  # noqa: E402
 from rayacash._encoding import Amount  # noqa: E402
 from rayacash._error import (  # noqa: E402
@@ -85,6 +102,14 @@ from rayacash._error import (  # noqa: E402
     UnprocessableEntityError,
 )
 from rayacash._event import Event, EventType  # noqa: E402
+from rayacash._identity_verification import (  # noqa: E402
+    IdentityVerification,
+    IdentityVerificationCheckStatus,
+    IdentityVerificationDeclineCode,
+    IdentityVerificationStatus,
+    IdentityVerificationType,
+)
+from rayacash._identity_verification_files import IdentityVerificationFiles  # noqa: E402
 from rayacash._list_object import AnyIterator, ListObject  # noqa: E402
 from rayacash._oauth import OAuth, OAuthToken  # noqa: E402
 from rayacash._payment import Payment, PaymentStatus  # noqa: E402
@@ -137,9 +162,17 @@ __all__ = [
     "ConflictError",
     "ConnectOrder",
     "ConnectOrderStatus",
+    "ConnectPayout",
+    "ConnectPayoutStatus",
     "Event",
     "EventType",
     "IdempotencyError",
+    "IdentityVerification",
+    "IdentityVerificationCheckStatus",
+    "IdentityVerificationDeclineCode",
+    "IdentityVerificationFiles",
+    "IdentityVerificationStatus",
+    "IdentityVerificationType",
     "InvalidRequestError",
     "ListObject",
     "NotFoundError",

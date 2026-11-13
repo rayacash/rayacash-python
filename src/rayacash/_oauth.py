@@ -37,7 +37,8 @@ class OAuthToken(RayaObject):
     OBJECT_NAME = "oauth_token"
 
     object: Literal["oauth_token"]
-    #: ``raya_at_live_…``: la credencial para operar por esa cuenta. Solo en tu servidor.
+    #: ``raya_at_live_…`` (``raya_at_test_…`` si es un usuario de prueba de un sandbox): la
+    #: credencial para operar por esa cuenta. Solo en tu servidor.
     access_token: str
     #: Siempre ``"Bearer"``.
     token_type: str

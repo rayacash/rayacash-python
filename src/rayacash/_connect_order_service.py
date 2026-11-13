@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Any, cast, overload
 from typing_extensions import Literal, deprecated
 
 from rayacash._connect_order import ConnectOrder
+from rayacash._connect_payout_service import ConnectPayoutService
 from rayacash._deprecated import accepts_checkout_id, accepts_checkout_id_async
 from rayacash._encoding import Amount, canonical_amount, path_id
 from rayacash._request_options import RequestOptions
@@ -320,9 +321,15 @@ class ConnectOrderService:
 
 
 class ConnectService:
-    """``client.connect``: Raya Connect. Hoy, ``client.connect.orders``."""
+    """``client.connect``: Raya Connect.
+
+    ``client.connect.orders`` (pagos a nombre de una cuenta conectada) va con el access_token de
+    esa cuenta; ``client.connect.payouts`` (lo que enviás a tus vendedores), con tu clave secreta.
+    """
 
     orders: ConnectOrderService
+    payouts: ConnectPayoutService
 
     def __init__(self, requestor: APIRequestor) -> None:
         self.orders = ConnectOrderService(requestor)
+        self.payouts = ConnectPayoutService(requestor)

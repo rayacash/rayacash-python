@@ -2,8 +2,9 @@
 
 Política (api.md › «Qué hacer según la respuesta»):
 
-- Sin respuesta (corte, timeout): se reintenta. Los POST siempre llevan Idempotency-Key, así
-  que nunca se ejecutan dos veces.
+- Sin respuesta (corte, timeout): se reintenta. Los POST llevan Idempotency-Key, así que nunca
+  se ejecutan dos veces. Los dos que no la llevan tampoco: el ``code`` de ``oauth.token`` se
+  canjea una sola vez y simular de nuevo un pago de prueba responde ``PAYMENT_NOT_PENDING``.
 - ``409 IDEMPOTENCY_KEY_IN_USE``, ``429``, ``408`` y ``5xx``: se reintenta, esperando el
   ``Retry-After`` si viene. Si pide más de ``MAX_RETRY_AFTER`` (un reembolso puede pedir
   3600 s), no se reintenta: el error sale con ``retry_after`` para que lo reprogrames.

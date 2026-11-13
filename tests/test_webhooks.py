@@ -4,6 +4,7 @@ import json
 from typing import Any
 
 import pytest
+from typing_extensions import get_args
 
 import rayacash
 from rayacash import _webhook
@@ -16,6 +17,13 @@ from tests.fixtures import (
     WEBHOOK_TEST_BODY,
     WEBHOOK_TEST_TIMESTAMP,
 )
+from tests.fixtures_identity import (
+    EVENT_VERIFICATION_CANCELED,
+    EVENT_VERIFICATION_VERIFIED,
+    VERIFICATION_DECLINED,
+    VERIFICATION_PENDING,
+)
+from tests.fixtures_sandbox import EVENT_SANDBOX_PAYMENT_SUCCEEDED
 
 T = WEBHOOK_TEST_TIMESTAMP
 HEADER = f"t={T},v1={WEBHOOK_SIGNATURE}"
@@ -179,6 +187,18 @@ def test_construct_event() -> None:
     assert event.data.object.status == "succeeded"
 
 
+def test_construct_event_from_a_sandbox() -> None:
+    # Un payment.succeeded de un sandbox, firmado: la firma es la misma y livemode viene en false.
+    body = json.dumps(EVENT_SANDBOX_PAYMENT_SUCCEEDED).encode()
+    header = rayacash.WebhookSignature.generate_header(body, WEBHOOK_SECRET)
+    event = rayacash.Webhook.construct_event(body, header, WEBHOOK_SECRET)
+    assert type(event) is rayacash.Event
+    assert event.livemode is False
+    assert type(event.data.object) is rayacash.Payment
+    assert event.data.object.bank_transfer.alias == "sandbox.no.transferir"
+    assert event.to_dict() == EVENT_SANDBOX_PAYMENT_SUCCEEDED
+
+
 def test_construct_event_test_and_unknown_types() -> None:
     event = rayacash.Webhook.construct_event(WEBHOOK_TEST_BODY, HEADER, WEBHOOK_SECRET)
     assert event.type == "webhook.test"
@@ -265,3 +285,43 @@ def test_generate_header_with_explicit_timestamp() -> None:
             rayacash.WebhookSignature.generate_header(
                 WEBHOOK_TEST_BODY, WEBHOOK_SECRET, timestamp=bad
             )
+
+
+# --- Identidad: los eventos identity.verification.* ---------------------------------------------
+
+IDENTITY_EVENTS: list[tuple[str, dict[str, Any]]] = [
+    ("identity.verification.verified", EVENT_VERIFICATION_VERIFIED["data"]["object"]),
+    ("identity.verification.declined", VERIFICATION_DECLINED),
+    (
+        "identity.verification.expired",
+        {**VERIFICATION_PENDING, "status": "expired", "completed_at": "2026-10-25T18:00:00Z"},
+    ),
+    ("identity.verification.canceled", EVENT_VERIFICATION_CANCELED["data"]["object"]),
+]
+
+
+@pytest.mark.parametrize(
+    ("event_type", "verification"), IDENTITY_EVENTS, ids=[name for name, _ in IDENTITY_EVENTS]
+)
+def test_construct_event_with_an_identity_verification(
+    event_type: str, verification: dict[str, Any]
+) -> None:
+    data = {**EVENT_VERIFICATION_VERIFIED, "type": event_type, "data": {"object": verification}}
+    body = json.dumps(data).encode()
+    header = rayacash.WebhookSignature.generate_header(body, WEBHOOK_SECRET)
+    event = rayacash.Webhook.construct_event(body, header, WEBHOOK_SECRET)
+    assert type(event) is rayacash.Event
+    assert event.type == event_type
+    assert type(event.data.object) is rayacash.IdentityVerification
+    assert event.data.object.status == event_type.rsplit(".", 1)[1]
+    assert event.data.object.person is None  # los eventos nunca traen person
+    assert event.to_dict() == data
+
+
+def test_event_type_lists_the_identity_events() -> None:
+    names = get_args(rayacash.EventType)
+    assert [name for name in names if name.startswith("identity.")] == [
+        name for name, _ in IDENTITY_EVENTS
+    ]
+    # Antes de webhook.test y de los checkout.* legacy, que van al final.
+    assert names.index("identity.verification.canceled") + 1 == names.index("webhook.test")

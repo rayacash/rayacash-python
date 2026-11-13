@@ -10,9 +10,12 @@ import pytest
 import rayacash
 from rayacash._error import error_from_response
 
-# Los 43 códigos del contrato (api.md › Códigos de error): los 32 de siempre más los 11 de Raya
-# Connect (apps y cuentas conectadas), cada uno al final de su bloque HTTP, en el orden del
-# contrato.
+# Los 51 códigos del contrato (api.md › Códigos de error): los 32 de siempre, los 11 de Raya
+# Connect (apps y cuentas conectadas), los 2 de los payouts, los 4 de Identidad (con
+# SANDBOX_NOT_SUPPORTED, el 403 de una credencial de prueba en un endpoint que todavía no está
+# disponible en el sandbox, e IDENTITY_NOT_ACTIVATED, al final de los 403) y los 2 del helper del
+# sandbox (SANDBOX_ONLY, después de SANDBOX_NOT_SUPPORTED, y PAYMENT_NOT_PENDING, después de
+# PAYMENT_NOT_REFUNDABLE). El test no mira el orden.
 CATALOG: list[tuple[str, int, type[rayacash.RayaError]]] = [
     ("INVALID_JSON", 400, rayacash.InvalidRequestError),
     ("PARAMETER_MISSING", 400, rayacash.InvalidRequestError),
@@ -35,15 +38,23 @@ CATALOG: list[tuple[str, int, type[rayacash.RayaError]]] = [
     ("CONNECTED_ACCOUNT_LOCKED", 403, rayacash.PermissionDeniedError),
     ("CONNECTED_ACCOUNT_NOT_CONFIGURED", 403, rayacash.PermissionDeniedError),
     ("APP_DISABLED", 403, rayacash.PermissionDeniedError),
+    ("PAYOUT_ORIGIN_UNAVAILABLE", 403, rayacash.PermissionDeniedError),
+    ("SANDBOX_NOT_SUPPORTED", 403, rayacash.PermissionDeniedError),
+    ("SANDBOX_ONLY", 403, rayacash.PermissionDeniedError),
+    ("IDENTITY_NOT_ACTIVATED", 403, rayacash.PermissionDeniedError),
     ("TRANSFER_NOT_FOUND", 404, rayacash.NotFoundError),
     ("PAYMENT_NOT_FOUND", 404, rayacash.NotFoundError),
     ("NOT_FOUND", 404, rayacash.NotFoundError),
     ("USER_NOT_FOUND", 404, rayacash.NotFoundError),
     ("ORDER_NOT_FOUND", 404, rayacash.NotFoundError),
+    ("PAYOUT_NOT_FOUND", 404, rayacash.NotFoundError),
+    ("VERIFICATION_NOT_FOUND", 404, rayacash.NotFoundError),
     ("METHOD_NOT_ALLOWED", 405, rayacash.InvalidRequestError),
     ("IDEMPOTENCY_KEY_REUSED", 409, rayacash.IdempotencyError),
     ("IDEMPOTENCY_KEY_IN_USE", 409, rayacash.IdempotencyError),
     ("PAYMENT_NOT_REFUNDABLE", 409, rayacash.ConflictError),
+    ("PAYMENT_NOT_PENDING", 409, rayacash.ConflictError),
+    ("VERIFICATION_NOT_CANCELABLE", 409, rayacash.ConflictError),
     ("REQUEST_TOO_LARGE", 413, rayacash.InvalidRequestError),
     ("INSUFFICIENT_BALANCE", 422, rayacash.UnprocessableEntityError),
     ("LIMIT_EXCEEDED", 422, rayacash.UnprocessableEntityError),
@@ -75,8 +86,9 @@ def make_error(
     )
 
 
-def test_catalog_has_the_43_codes() -> None:
-    assert len({code for code, _, _ in CATALOG}) == 43
+def test_catalog_has_the_51_codes() -> None:
+    assert len({code for code, _, _ in CATALOG}) == 51
+    assert len(CATALOG) == 51
 
 
 @pytest.mark.parametrize(("code", "status", "cls"), CATALOG)
@@ -170,6 +182,54 @@ def test_payment_not_refundable_with_and_without_reason() -> None:
     )
     assert type(without) is rayacash.ConflictError
     assert without.data == {"status": "refunded"}
+
+
+def test_verification_not_cancelable_carries_the_status() -> None:
+    error = make_error(
+        409,
+        {
+            "error": {
+                "code": "VERIFICATION_NOT_CANCELABLE",
+                "message": "Solo podés cancelar verificaciones pending o in_progress.",
+                "data": {"status": "processing"},
+            }
+        },
+    )
+    assert type(error) is rayacash.ConflictError  # no es un IdempotencyError
+    assert error.data == {"status": "processing"}
+
+
+def test_the_sandbox_codes_keep_their_message_and_data() -> None:
+    # Los dos del helper del sandbox, con los mensajes literales de la API.
+    not_pending = make_error(
+        409,
+        {
+            "error": {
+                "code": "PAYMENT_NOT_PENDING",
+                "message": "Solo podés simular la transferencia de un pago pendiente.",
+                "data": {"status": "expired"},
+            }
+        },
+    )
+    assert type(not_pending) is rayacash.ConflictError  # no es un IdempotencyError
+    assert not_pending.data == {"status": "expired"}
+    message = "Este endpoint solo funciona en un sandbox: usá una credencial de prueba."
+    only = make_error(403, {"error": {"code": "SANDBOX_ONLY", "message": message, "data": None}})
+    assert type(only) is rayacash.PermissionDeniedError
+    assert only.message == message
+    assert only.data is None
+
+
+def test_the_verification_limit_comes_as_rate_limited() -> None:
+    # Los topes de Identidad (verificaciones abiertas o por día): data.limit y Retry-After: 3600.
+    error = make_error(
+        429,
+        {"error": {"code": "RATE_LIMITED", "message": "x", "data": {"limit": "daily"}}},
+        {"Retry-After": "3600"},
+    )
+    assert type(error) is rayacash.RateLimitError
+    assert error.retry_after == 3600.0
+    assert error.data == {"limit": "daily"}
 
 
 @pytest.mark.parametrize(
