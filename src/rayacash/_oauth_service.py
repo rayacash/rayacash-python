@@ -13,7 +13,9 @@ GRANT_TYPE = "authorization_code"
 
 _HINTS = {
     "client_id": 'el número de tu aplicación, como "7650337728110670"',
-    "client_secret": "raya_cs_live_…, de Developers › Apps",
+    "client_secret": (
+        "raya_cs_live_…, de Developers › Apps, o raya_cs_test_…, el de una app de un sandbox"
+    ),
     "code": "el code que llegó a la query de tu redirect_uri",
     "redirect_uri": "la misma URL del link de autorización",
 }
@@ -59,7 +61,8 @@ class OAuthService:
         ``token.access_token`` y ``token.user_id`` como guardás tu clave secreta.
 
         :param client_id: El número de tu aplicación (16 dígitos), de Developers › Apps.
-        :param client_secret: ``raya_cs_live_…``. Solo en tu servidor, nunca en el navegador.
+        :param client_secret: ``raya_cs_live_…`` (``raya_cs_test_…``, el de una app de un
+            sandbox). Solo en tu servidor, nunca en el navegador.
         :param code: El ``code`` que llegó a la query de tu ``redirect_uri``. Dura 10 minutos.
         :param redirect_uri: Exactamente la misma URL del link de autorización.
         """

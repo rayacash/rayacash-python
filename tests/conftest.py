@@ -28,7 +28,7 @@ _GLOBAL_DEFAULTS = {
 
 @pytest.fixture(autouse=True)
 def _no_network(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Ningún test puede llamar a la API real: no hay sandbox y cada request mueve plata."""
+    """Ningún test puede llamar a la API real: con una clave real, cada request mueve plata."""
 
     def deny(*args: Any, **kwargs: Any) -> Any:
         raise RuntimeError("Los tests del SDK nunca salen a la red: usá MockAPI.")
@@ -77,7 +77,7 @@ def client(api: MockAPI) -> Iterator[rayacash.RayaClient]:
 
 @pytest.fixture
 def connected(api: MockAPI) -> Iterator[rayacash.RayaClient]:
-    """Un cliente con el access_token de una cuenta conectada (users y checkout)."""
+    """Un cliente con el access_token de una cuenta conectada (users y connect.orders)."""
     raya = api.client(ACCESS_TOKEN)
     yield raya
     raya.close()

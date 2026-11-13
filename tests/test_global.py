@@ -28,15 +28,36 @@ from tests.fixtures_apps import (
     APP_CLIENT_ID,
     APP_CLIENT_SECRET,
     AUTH_CODE,
-    CHECKOUT_ID,
-    CHECKOUT_PENDING,
-    CHECKOUT_REFUNDED,
-    CHECKOUT_SUCCEEDED,
-    EVENT_CHECKOUT_SUCCEEDED,
+    EVENT_ORDER_SUCCEEDED,
     OAUTH_TOKEN,
+    ORDER_ID,
+    ORDER_PENDING,
+    ORDER_REFUNDED,
+    ORDER_SUCCEEDED,
+    PAYOUT_COMPLETED,
+    PAYOUT_DESTINATION,
+    PAYOUT_ID,
+    PAYOUT_LIST,
+    PAYOUT_PENDING,
     REDIRECT_URI,
     USER,
     USER_ID,
+)
+from tests.fixtures_identity import (
+    EVENT_VERIFICATION_VERIFIED,
+    VERIFICATION_CANCELED,
+    VERIFICATION_FILES,
+    VERIFICATION_ID,
+    VERIFICATION_LIST,
+    VERIFICATION_PENDING,
+    VERIFICATION_VERIFIED,
+)
+from tests.fixtures_sandbox import (
+    SANDBOX_KEY,
+    SANDBOX_ORDER_ID,
+    SANDBOX_ORDER_SUCCEEDED,
+    SANDBOX_PAYMENT_FAILED,
+    SANDBOX_PAYMENT_ID,
 )
 from tests.helpers import OTHER_KEY, TEST_KEY, Caller, MockAPI
 
@@ -210,7 +231,7 @@ def test_owned_global_clients(monkeypatch: pytest.MonkeyPatch, api: MockAPI) -> 
     assert len(created) == 1  # el estilo global reusa su cliente httpx
 
 
-# --- Apps y cuentas conectadas: rayacash.OAuth / User / Checkout --------------------------------
+# --- Raya Connect: rayacash.OAuth / User / ConnectOrder ------------------------------------------
 
 
 def test_apps_endpoints(global_api: MockAPI, call: Caller) -> None:
@@ -228,19 +249,21 @@ def test_apps_endpoints(global_api: MockAPI, call: Caller) -> None:
     assert api.last.url.path == f"/v1/users/{USER_ID}"
     assert api.last.headers["authorization"] == f"Bearer {ACCESS_TOKEN}"
 
-    api.add(201, CHECKOUT_PENDING)
-    checkout = call(rayacash.Checkout, "create", items=[ITEM], fee=500)
-    assert type(checkout) is rayacash.Checkout
+    api.add(201, ORDER_PENDING)
+    order = call(rayacash.ConnectOrder, "create", items=[ITEM], fee=500)
+    assert type(order) is rayacash.ConnectOrder
+    assert api.last.url.path == "/v1/connect/orders"
     assert json.loads(api.last.content) == {"items": [ITEM], "fee": 500}
     assert uuid.UUID(api.last.headers["idempotency-key"]).version == 4
 
-    api.add(200, CHECKOUT_SUCCEEDED)
-    assert call(rayacash.Checkout, "retrieve", CHECKOUT_ID).status == "succeeded"
+    api.add(200, ORDER_SUCCEEDED)
+    assert call(rayacash.ConnectOrder, "retrieve", ORDER_ID).status == "succeeded"
+    assert api.last.url.path == f"/v1/connect/orders/{ORDER_ID}"
 
-    api.add(200, CHECKOUT_REFUNDED)
-    refunded = call(rayacash.Checkout, "refund", CHECKOUT_ID, idempotency_key="r-1")
+    api.add(200, ORDER_REFUNDED)
+    refunded = call(rayacash.ConnectOrder, "refund", ORDER_ID, idempotency_key="r-1")
     assert refunded.status == "refunded"
-    assert api.last.url.path == f"/v1/checkout/orders/{CHECKOUT_ID}/refund"
+    assert api.last.url.path == f"/v1/connect/orders/{ORDER_ID}/refund"
     assert api.last.headers["idempotency-key"] == "r-1"
 
 
@@ -255,45 +278,251 @@ def test_oauth_token_without_any_key(api: MockAPI, call: Caller) -> None:
     assert "idempotency-key" not in api.last.headers
 
 
-def test_checkout_instance_refund(global_api: MockAPI, call: Caller) -> None:
+def test_connect_order_instance_refund(global_api: MockAPI, call: Caller) -> None:
     rayacash.api_key = ACCESS_TOKEN
-    global_api.add(200, CHECKOUT_SUCCEEDED)
-    checkout = rayacash.Checkout.retrieve(CHECKOUT_ID)
-    global_api.add(200, CHECKOUT_REFUNDED)
-    refunded = call(checkout, "refund")
+    global_api.add(200, ORDER_SUCCEEDED)
+    order = rayacash.ConnectOrder.retrieve(ORDER_ID)
+    global_api.add(200, ORDER_REFUNDED)
+    refunded = call(order, "refund")
     assert refunded.status == "refunded"
-    assert checkout.status == "succeeded"  # devuelve un checkout nuevo, no muta el original
-    assert global_api.last.url.path == f"/v1/checkout/orders/{CHECKOUT_ID}/refund"
+    assert order.status == "succeeded"  # devuelve un pago nuevo, no muta el original
+    assert global_api.last.url.path == f"/v1/connect/orders/{ORDER_ID}/refund"
     assert global_api.last.headers["authorization"] == f"Bearer {ACCESS_TOKEN}"
 
 
-def test_checkout_instance_refund_uses_the_client_it_came_from(
+def test_connect_order_instance_refund_uses_the_client_it_came_from(
     global_api: MockAPI, call: Caller
 ) -> None:
     other_api = MockAPI()
     connected = other_api.client(ACCESS_TOKEN)
-    other_api.add(200, CHECKOUT_SUCCEEDED)
-    checkout = connected.checkout.orders.retrieve(CHECKOUT_ID)
-    other_api.add(200, CHECKOUT_REFUNDED)
-    call(checkout, "refund", idempotency_key="r-3")
+    other_api.add(200, ORDER_SUCCEEDED)
+    order = connected.connect.orders.retrieve(ORDER_ID)
+    other_api.add(200, ORDER_REFUNDED)
+    call(order, "refund", idempotency_key="r-3")
     assert other_api.last.headers["authorization"] == f"Bearer {ACCESS_TOKEN}"
     assert other_api.last.headers["idempotency-key"] == "r-3"
     assert global_api.requests == []
 
 
-def test_checkout_events_from_construct_event_use_the_global_style(global_api: MockAPI) -> None:
-    body = json.dumps(EVENT_CHECKOUT_SUCCEEDED)
+def test_connect_order_events_from_construct_event_use_the_global_style(
+    global_api: MockAPI,
+) -> None:
+    # Un connect.order.succeeded firmado, de punta a punta: el tipo y el object llevan puntos.
+    body = json.dumps(EVENT_ORDER_SUCCEEDED)
     header = rayacash.WebhookSignature.generate_header(body, WEBHOOK_SECRET)
     event = rayacash.Webhook.construct_event(body, header, WEBHOOK_SECRET)
-    checkout = event.data.object
-    assert isinstance(checkout, rayacash.Checkout)
-    global_api.add(200, CHECKOUT_REFUNDED)
-    asyncio.run(checkout.refund_async(idempotency_key="r-2"))
-    assert global_api.last.url.path == f"/v1/checkout/orders/{CHECKOUT_ID}/refund"
+    assert event.type == "connect.order.succeeded"
+    order = event.data.object
+    assert isinstance(order, rayacash.ConnectOrder)
+    global_api.add(200, ORDER_REFUNDED)
+    asyncio.run(order.refund_async(idempotency_key="r-2"))
+    assert global_api.last.url.path == f"/v1/connect/orders/{ORDER_ID}/refund"
     assert global_api.last.headers["idempotency-key"] == "r-2"
 
 
-def test_checkout_refund_needs_an_id() -> None:
-    checkout = rayacash.Checkout.construct_from({"object": "checkout"})
+def test_connect_order_refund_needs_an_id() -> None:
+    order = rayacash.ConnectOrder.construct_from({"object": "connect.order"})
     with pytest.raises(ValueError, match="no tiene id"):
-        checkout.refund()
+        order.refund()
+
+
+# --- Raya Connect: rayacash.ConnectPayout, con la clave secreta --------------------------------
+
+
+def test_connect_payout_endpoints(global_api: MockAPI, call: Caller) -> None:
+    api = global_api  # rayacash.api_key es la clave secreta, no un access_token
+    api.add(201, PAYOUT_PENDING)
+    payout = call(
+        rayacash.ConnectPayout,
+        "create",
+        amount=60000,
+        destination=PAYOUT_DESTINATION,
+        idempotency_key="k",
+    )
+    assert type(payout) is rayacash.ConnectPayout
+    assert payout.net_amount == 59129.75
+    assert api.last.url.path == "/v1/connect/payouts"
+    assert api.last.headers["authorization"] == f"Bearer {TEST_KEY}"
+    assert api.last.headers["idempotency-key"] == "k"
+    assert json.loads(api.last.content) == {"amount": 60000, "destination": PAYOUT_DESTINATION}
+
+    api.add(200, PAYOUT_COMPLETED)
+    assert call(rayacash.ConnectPayout, "retrieve", PAYOUT_ID).status == "completed"
+    assert api.last.url.path == f"/v1/connect/payouts/{PAYOUT_ID}"
+
+    api.add(200, PAYOUT_LIST)
+    page = call(rayacash.ConnectPayout, "list", status="completed", limit=2)
+    assert type(page) is rayacash.ListObject
+    assert type(page.data[0]) is rayacash.ConnectPayout
+    assert api.last.url.path == "/v1/connect/payouts"
+    assert dict(api.last.url.params) == {"status": "completed", "limit": "2"}
+
+
+# --- Identidad: rayacash.IdentityVerification, con la clave secreta -----------------------------
+
+VERIFICATION_PATH = f"/v1/identity/verifications/{VERIFICATION_ID}"
+
+
+def test_identity_verification_endpoints(global_api: MockAPI, call: Caller) -> None:
+    api = global_api
+    api.add(201, VERIFICATION_PENDING)
+    verification = call(
+        rayacash.IdentityVerification,
+        "create",
+        type="document",
+        metadata={"plan": "pro"},
+        idempotency_key="k",
+    )
+    assert type(verification) is rayacash.IdentityVerification
+    assert api.last.url.path == "/v1/identity/verifications"
+    assert json.loads(api.last.content) == {"type": "document", "metadata": {"plan": "pro"}}
+    assert api.last.headers["authorization"] == f"Bearer {TEST_KEY}"
+    assert api.last.headers["idempotency-key"] == "k"
+
+    api.add(200, VERIFICATION_VERIFIED)
+    assert call(rayacash.IdentityVerification, "retrieve", VERIFICATION_ID).status == "verified"
+    assert api.last.url.path == VERIFICATION_PATH
+
+    api.add(200, VERIFICATION_LIST)
+    page = call(rayacash.IdentityVerification, "list", status="verified", limit=2)
+    assert type(page) is rayacash.ListObject
+    assert type(page.data[0]) is rayacash.IdentityVerification
+    assert dict(api.last.url.params) == {"status": "verified", "limit": "2"}
+
+    api.add(200, VERIFICATION_CANCELED)
+    canceled = call(rayacash.IdentityVerification, "cancel", VERIFICATION_ID, idempotency_key="c-1")
+    assert canceled.status == "canceled"
+    assert api.last.url.path == f"{VERIFICATION_PATH}/cancel"
+    assert api.last.headers["idempotency-key"] == "c-1"
+
+    api.add(200, VERIFICATION_FILES)
+    files = call(rayacash.IdentityVerification, "files", VERIFICATION_ID)
+    assert type(files) is rayacash.IdentityVerificationFiles
+    assert api.last.url.path == f"{VERIFICATION_PATH}/files"
+
+
+def test_identity_verification_cancel_by_id_without_a_key(
+    global_api: MockAPI, call: Caller
+) -> None:
+    global_api.add(200, VERIFICATION_CANCELED)
+    call(rayacash.IdentityVerification, "cancel", VERIFICATION_ID)
+    assert global_api.last.content == b""
+    assert uuid.UUID(global_api.last.headers["idempotency-key"]).version == 4
+
+
+def test_identity_verification_instance_cancel(global_api: MockAPI, call: Caller) -> None:
+    global_api.add(200, VERIFICATION_PENDING)
+    verification = rayacash.IdentityVerification.retrieve(VERIFICATION_ID)
+    global_api.add(200, VERIFICATION_CANCELED)
+    canceled = call(verification, "cancel")
+    assert type(canceled) is rayacash.IdentityVerification
+    assert canceled.status == "canceled"
+    assert verification.status == "pending"  # devuelve una verificación nueva, no muta la original
+    assert global_api.last.url.path == f"{VERIFICATION_PATH}/cancel"
+    assert global_api.last.headers["authorization"] == f"Bearer {TEST_KEY}"
+    assert uuid.UUID(global_api.last.headers["idempotency-key"]).version == 4
+
+
+def test_identity_verification_instance_cancel_uses_the_client_it_came_from(
+    global_api: MockAPI, call: Caller
+) -> None:
+    other_api = MockAPI()
+    client = other_api.client(OTHER_KEY)
+    other_api.add(200, VERIFICATION_PENDING)
+    verification = client.identity.verifications.retrieve(VERIFICATION_ID)
+    other_api.add(200, VERIFICATION_CANCELED)
+    call(verification, "cancel", idempotency_key="c-3")
+    assert other_api.last.headers["authorization"] == f"Bearer {OTHER_KEY}"
+    assert other_api.last.headers["idempotency-key"] == "c-3"
+    # También las de una página: cada verificación recuerda el cliente del que vino.
+    other_api.add(200, VERIFICATION_LIST)
+    page = client.identity.verifications.list()
+    other_api.add(200, VERIFICATION_CANCELED)
+    call(page.data[1], "cancel")
+    assert other_api.last.url.path == f"{VERIFICATION_PATH}/cancel"
+    assert other_api.last.headers["authorization"] == f"Bearer {OTHER_KEY}"
+    assert global_api.requests == []
+
+
+def test_identity_events_from_construct_event_use_the_global_style(global_api: MockAPI) -> None:
+    # Un identity.verification.verified firmado, de punta a punta: person viene en None.
+    body = json.dumps(EVENT_VERIFICATION_VERIFIED)
+    header = rayacash.WebhookSignature.generate_header(body, WEBHOOK_SECRET)
+    event = rayacash.Webhook.construct_event(body, header, WEBHOOK_SECRET)
+    assert event.type == "identity.verification.verified"
+    verification = event.data.object
+    assert isinstance(verification, rayacash.IdentityVerification)
+    assert verification.person is None
+    global_api.add(200, VERIFICATION_CANCELED)
+    asyncio.run(verification.cancel_async(idempotency_key="c-2"))
+    assert global_api.last.url.path == f"{VERIFICATION_PATH}/cancel"
+    assert global_api.last.headers["idempotency-key"] == "c-2"
+
+
+def test_identity_events_from_client_construct_event_use_that_client(
+    global_api: MockAPI,
+) -> None:
+    other_api = MockAPI()
+    client = other_api.client(OTHER_KEY)
+    body = json.dumps(EVENT_VERIFICATION_VERIFIED)
+    header = rayacash.WebhookSignature.generate_header(body, WEBHOOK_SECRET)
+    verification = client.construct_event(body, header, WEBHOOK_SECRET).data.object
+    assert isinstance(verification, rayacash.IdentityVerification)
+    other_api.add(200, VERIFICATION_CANCELED)
+    verification.cancel()
+    assert other_api.last.headers["authorization"] == f"Bearer {OTHER_KEY}"
+    assert global_api.requests == []
+
+
+def test_identity_verification_cancel_needs_an_id(call: Caller) -> None:
+    verification = rayacash.IdentityVerification.construct_from({"object": "identity.verification"})
+    with pytest.raises(
+        ValueError, match=r"^Esta IdentityVerification no tiene id: no se puede cancelar\.$"
+    ):
+        call(verification, "cancel")
+
+
+def test_identity_verification_without_any_key(api: MockAPI, call: Caller) -> None:
+    rayacash.http_client = api.sync_client()
+    rayacash.async_http_client = api.async_client()
+    with pytest.raises(rayacash.AuthenticationError) as info:
+        call(rayacash.IdentityVerification, "retrieve", VERIFICATION_ID)
+    assert info.value.code == "API_KEY_MISSING"
+    assert api.requests == []
+
+
+# --- Sandbox: rayacash.Payment.simulate_transfer, con la clave secreta de prueba ---------------
+
+
+def test_sandbox_simulate_transfer(global_api: MockAPI, call: Caller) -> None:
+    api = global_api
+    rayacash.api_key = SANDBOX_KEY  # la clave secreta de prueba del sandbox
+    api.add(200, SANDBOX_PAYMENT_FAILED)
+    payment = call(rayacash.Payment, "simulate_transfer", SANDBOX_PAYMENT_ID, amount=1000)
+    assert type(payment) is rayacash.Payment
+    assert payment.failure_code == "amount_mismatch"
+    request = api.last
+    assert (request.method, request.url.path) == (
+        "POST",
+        f"/v1/test/payments/{SANDBOX_PAYMENT_ID}/simulate_transfer",
+    )
+    assert request.headers["authorization"] == f"Bearer {SANDBOX_KEY}"
+    assert "idempotency-key" not in request.headers
+    assert json.loads(request.content) == {"amount": 1000}
+
+    # Con el id de una orden de Raya Connect de una app del sandbox, vuelve el ConnectOrder.
+    api.add(200, SANDBOX_ORDER_SUCCEEDED)
+    order = call(rayacash.Payment, "simulate_transfer", SANDBOX_ORDER_ID)
+    assert type(order) is rayacash.ConnectOrder
+    assert api.last.url.path == f"/v1/test/payments/{SANDBOX_ORDER_ID}/simulate_transfer"
+    assert api.last.content == b""
+    assert "idempotency-key" not in api.last.headers
+
+
+def test_sandbox_simulate_transfer_without_any_key(api: MockAPI, call: Caller) -> None:
+    rayacash.http_client = api.sync_client()
+    rayacash.async_http_client = api.async_client()
+    with pytest.raises(rayacash.AuthenticationError) as info:
+        call(rayacash.Payment, "simulate_transfer", SANDBOX_PAYMENT_ID)
+    assert info.value.code == "API_KEY_MISSING"
+    assert api.requests == []

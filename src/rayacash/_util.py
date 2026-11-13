@@ -17,7 +17,7 @@ from rayacash._version import VERSION
 
 logger = logging.getLogger("rayacash")
 
-# Como STRIPE_LOG: se lee una vez, al importar. rayacash.log lo pisa en runtime.
+# RAYA_LOG se lee una vez, al importar. rayacash.log lo pisa en runtime.
 RAYA_LOG = os.environ.get("RAYA_LOG")
 
 
@@ -122,11 +122,16 @@ def user_agent(app_info: AppInfo | None) -> str:
     return ua
 
 
-_KEY_PREFIXES = ("raya_sk_live_", "raya_at_live_")
+# Los prefijos que se conservan al enmascarar: la clave secreta y el access_token de una cuenta
+# conectada, cada uno con su par de prueba (el de un sandbox y el de un usuario de prueba).
+_KEY_PREFIXES = ("raya_sk_live_", "raya_sk_test_", "raya_at_live_", "raya_at_test_")
 
 
 def mask_key(key: str | None) -> str | None:
-    """raya_sk_live_…AbCd (o raya_at_live_…AbCd): para repr y logs. Nunca la clave entera."""
+    """raya_sk_live_…AbCd (o raya_sk_test_…, raya_at_live_… o raya_at_test_…): para repr y logs.
+
+    Nunca la clave ni el access_token enteros.
+    """
     if not key:
         return None
     prefix = next((p for p in _KEY_PREFIXES if key.startswith(p)), "")

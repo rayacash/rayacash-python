@@ -26,7 +26,7 @@ class OAuthToken(RayaObject):
     """El access_token de una cuenta de Raya que conectó tu aplicación.
 
     Guardalo junto a ``user_id`` como guardás tu clave secreta: es la ``api_key`` de un
-    ``RayaClient`` para cobrar a nombre de esa cuenta (``client.checkout.orders``) y leer sus
+    ``RayaClient`` para cobrar a nombre de esa cuenta (``client.connect.orders``) y leer sus
     datos (``client.users``). No vence: deja de valer cuando la cuenta desconecta tu app
     (``ACCESS_TOKEN_REVOKED``) o cuando vuelve a autorizarla (se emite uno nuevo).
 
@@ -37,14 +37,15 @@ class OAuthToken(RayaObject):
     OBJECT_NAME = "oauth_token"
 
     object: Literal["oauth_token"]
-    #: ``raya_at_live_…``: la credencial para operar por esa cuenta. Solo en tu servidor.
+    #: ``raya_at_live_…`` (``raya_at_test_…`` si es un usuario de prueba de un sandbox): la
+    #: credencial para operar por esa cuenta. Solo en tu servidor.
     access_token: str
     #: Siempre ``"Bearer"``.
     token_type: str
-    #: Los permisos que dio la cuenta, separados por espacio (``"checkout profile"``).
+    #: Los permisos que dio la cuenta, separados por espacio (``"orders profile"``).
     scope: str
-    #: El id de la cuenta conectada: el de ``client.users.retrieve()`` y el ``account`` de sus
-    #: checkouts.
+    #: El id de la cuenta conectada: el de ``client.users.retrieve()`` y el ``account`` de los
+    #: pagos que creás a su nombre.
     user_id: str
     #: Hoy siempre ``None``: el token no vence. Viene por las integraciones portadas de Mercado
     #: Pago.
