@@ -27,6 +27,14 @@ Identidad (verificar la identidad de tus clientes, con tu clave secreta)::
     verification = client.identity.verifications.create(type="document")
     print(verification.url)  # o abrila en tu web con Identity.js (npm install rayacash-identity)
 
+Raya PSP (cuentas con CVU a nombre de los clientes de tu empresa)::
+
+    # Con Identidad alcanza la verificación: su CUIL y su nombre salen de ahí.
+    customer = client.psp.customers.create(identity_verification=verification.id)
+    transfer = client.psp.transfers.create(
+        customer=customer.id, amount=18350.5, destination=cvu, idempotency_key=key
+    )
+
 En un sandbox, con su clave secreta de prueba (raya_sk_test_…), sin mover plata::
 
     payment = client.payments.create(amount=15000)
@@ -50,8 +58,8 @@ __version__ = VERSION
 
 # --- Configuración del estilo global -------------------------------------------------------
 # Solo la usan rayacash.Balance / Transfer / Payment / OAuth / User / ConnectOrder /
-# ConnectPayout / IdentityVerification. Un RayaClient tiene la suya, salvo el logging (log y
-# RAYA_LOG), que vale para todo el proceso.
+# ConnectPayout / IdentityVerification / PspCustomer / PspTransfer / PspBalance. Un RayaClient tiene
+# la suya, salvo el logging (log y RAYA_LOG), que vale para todo el proceso.
 
 #: Tu clave secreta (raya_sk_live_…) o el access_token de una cuenta conectada (raya_at_live_…);
 #: en un sandbox, sus pares de prueba (raya_sk_test_… o raya_at_test_…). Si es None, se lee de la
@@ -113,6 +121,24 @@ from rayacash._identity_verification_files import IdentityVerificationFiles  # n
 from rayacash._list_object import AnyIterator, ListObject  # noqa: E402
 from rayacash._oauth import OAuth, OAuthToken  # noqa: E402
 from rayacash._payment import Payment, PaymentStatus  # noqa: E402
+from rayacash._psp_balance import PspBalance, PspCustomerBalance  # noqa: E402
+from rayacash._psp_customer import (  # noqa: E402
+    PspCustomer,
+    PspCustomerBlockedBy,
+    PspCustomerDeclineCode,
+    PspCustomerPersonType,
+    PspCustomerStatus,
+    PspCvuStatus,
+)
+from rayacash._psp_document_request import (  # noqa: E402
+    PspDocumentRequest,
+    PspDocumentRequestStatus,
+)
+from rayacash._psp_transfer import (  # noqa: E402
+    PspTransfer,
+    PspTransferDirection,
+    PspTransferStatus,
+)
 from rayacash._raya_object import RayaObject  # noqa: E402
 from rayacash._request_options import RequestOptions  # noqa: E402
 from rayacash._response import RayaResponse  # noqa: E402
@@ -181,6 +207,19 @@ __all__ = [
     "Payment",
     "PaymentStatus",
     "PermissionDeniedError",
+    "PspBalance",
+    "PspCustomer",
+    "PspCustomerBalance",
+    "PspCustomerBlockedBy",
+    "PspCustomerDeclineCode",
+    "PspCustomerPersonType",
+    "PspCustomerStatus",
+    "PspCvuStatus",
+    "PspDocumentRequest",
+    "PspDocumentRequestStatus",
+    "PspTransfer",
+    "PspTransferDirection",
+    "PspTransferStatus",
     "RateLimitError",
     "RayaClient",
     "RayaError",

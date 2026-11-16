@@ -95,15 +95,19 @@ class MockAPI:
 
 
 class Caller:
-    """Llama a un método en su versión sync o en la ``*_async`` (con su propio event loop)."""
+    """Llama a un método en su versión sync o en la ``*_async`` (con su propio event loop).
+
+    ``owner`` y ``method`` van solo por posición: así los kwargs del método pueden llamarse igual
+    (como ``name`` en ``psp.customers.create``).
+    """
 
     def __init__(self, mode: str) -> None:
         self.mode = mode
 
-    def __call__(self, owner: Any, name: str, *args: Any, **kwargs: Any) -> Any:
+    def __call__(self, owner: Any, method: str, /, *args: Any, **kwargs: Any) -> Any:
         if self.mode == "sync":
-            return getattr(owner, name)(*args, **kwargs)
-        return asyncio.run(getattr(owner, name + "_async")(*args, **kwargs))
+            return getattr(owner, method)(*args, **kwargs)
+        return asyncio.run(getattr(owner, method + "_async")(*args, **kwargs))
 
     def __repr__(self) -> str:
         return self.mode

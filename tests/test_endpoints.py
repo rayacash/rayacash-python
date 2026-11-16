@@ -1,8 +1,9 @@
-"""Los 21 endpoints, en sync y en async: método, ruta, query, body y headers exactos."""
+"""Los 33 endpoints, en sync y en async: método, ruta, query, body y headers exactos."""
 
 from __future__ import annotations
 
 import json
+import re
 import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -12,6 +13,7 @@ import httpx
 import pytest
 
 import rayacash
+from tests import fixtures_psp as psp
 from tests.fixtures import (
     BALANCE,
     PAYMENT_ID,
@@ -1555,3 +1557,1186 @@ def test_simulate_transfer_without_object_is_a_payment(api: MockAPI) -> None:
     payment = api.client(SANDBOX_KEY).test_helpers.payments.simulate_transfer(SANDBOX_PAYMENT_ID)
     assert type(payment) is rayacash.Payment
     assert payment.to_dict() == body
+
+
+# --- Raya PSP: psp.customers.*, psp.transfers.* y psp.balance, con la clave secreta -----------
+
+PSP_CUSTOMERS_URL = "https://api.raya.cash/v1/psp/customers"
+PSP_TRANSFERS_URL = "https://api.raya.cash/v1/psp/transfers"
+PSP_CUSTOMER_ACTIONS = ["block", "unblock", "close", "recreate"]
+# El orden de CREATE_FIELDS de la API (pspexternal/api_params.py): el del body de create.
+PSP_CREATE_FIELDS = [
+    "identity_verification",
+    "tax_id",
+    "name",
+    "person_type",
+    "document_front_url",
+    "document_back_url",
+    "selfie_url",
+    "external_reference",
+    "metadata",
+]
+# Las tres formas de crear un cliente: con Identidad alcanza la verificación; sin ella, los datos
+# de una persona humana con sus fotos (psp.PHOTOS_BODY) o los de una persona jurídica.
+PSP_IDENTITY_PROOF: dict[str, Any] = {"identity_verification": VERIFICATION_ID}
+PSP_COMPANY: dict[str, Any] = {
+    "tax_id": psp.COMPANY_TAX_ID,
+    "name": psp.COMPANY_NAME,
+    "person_type": "J",
+}
+# La pista de los TypeError de tax_id y name, que solo se piden sin identity_verification.
+PSP_IDENTITY_HINT = (
+    " Si tu cliente se verificó con Raya Identity, mandá solo identity_verification."
+)
+# El 400 de la API si identity_verification viene con algún dato o foto (en data.field, el primero
+# de esos campos en el orden de CREATE_FIELDS).
+PSP_ONLY_THE_VERIFICATION = (
+    "Con identity_verification no mandes tax_id, name, person_type ni fotos: los tomamos de la "
+    "verificación."
+)
+
+
+def test_psp_customer_create(client: rayacash.RayaClient, api: MockAPI, call: Caller) -> None:
+    # Con Identidad alcanza la verificación: el CUIL, el nombre y el sexo salen de ahí.
+    api.add(201, psp.CUSTOMER_ACTIVE)
+    customer = call(
+        client.psp.customers,
+        "create",
+        metadata={"plan": "pro"},
+        external_reference="cliente-8812",
+        identity_verification=VERIFICATION_ID,
+    )
+    assert type(customer) is rayacash.PspCustomer
+    assert customer.object == "psp.customer"
+    assert customer.id == psp.CUSTOMER_ID
+    assert customer.status == "active"
+    assert customer.balance == 0
+    assert type(customer.cvu) is rayacash.PspCustomer.Cvu
+    assert customer.cvu.account == psp.CUSTOMER_ACCOUNT
+    assert customer.cvu.alias == "maria_ejemplo"
+    assert customer.identity_verification == VERIFICATION_ID
+    # Lo que no mandaste vuelve en la respuesta: el CUIL y el nombre de la verificación.
+    assert (customer.tax_id, customer.name, customer.person_type) == (
+        psp.TAX_ID,
+        psp.CUSTOMER_NAME,
+        "F",
+    )
+    request = api.last
+    assert (request.method, str(request.url)) == ("POST", PSP_CUSTOMERS_URL)
+    # El body va en el orden de la API (CREATE_FIELDS de api_params.py), no en el de los kwargs.
+    assert request.content == (
+        b'{"identity_verification":"idv_3kT9vQ2mXw7Lp0aBcD4eF6gH",'
+        b'"external_reference":"cliente-8812","metadata":{"plan":"pro"}}'
+    )
+    assert api.last_json() == psp.CREATE_BODY
+    assert request.headers["content-type"] == "application/json"
+    assert request.headers["authorization"] == f"Bearer {TEST_KEY}"
+    # Sin clave propia, generamos un UUID v4 para esta llamada, como en payments.create.
+    key = request.headers["idempotency-key"]
+    assert uuid.UUID(key).version == 4
+    assert customer.last_response is not None
+    assert customer.last_response.idempotency_key == key
+    assert customer.last_response.http_status == 201
+
+
+def test_psp_customer_create_with_the_photos_is_202_verifying(
+    client: rayacash.RayaClient, api: MockAPI, call: Caller
+) -> None:
+    # Sin Identidad (tu propio KYC u otro proveedor), una persona humana lleva sus datos y las tres
+    # fotos, sin gender: el sexo lo leemos del frente del DNI.
+    api.add(202, psp.CUSTOMER_VERIFYING)
+    customer = call(
+        client.psp.customers,
+        "create",
+        external_reference="cliente-8812",
+        selfie_url=psp.PHOTO_URLS["selfie_url"],
+        document_back_url=psp.PHOTO_URLS["document_back_url"],
+        document_front_url=psp.PHOTO_URLS["document_front_url"],
+        person_type="F",
+        name=psp.CUSTOMER_NAME,
+        tax_id=psp.TAX_ID,
+        idempotency_key="alta-cliente-8812",
+    )
+    assert type(customer) is rayacash.PspCustomer
+    assert customer.status == "verifying"
+    assert customer.cvu is None
+    assert customer.identity_verification is None
+    assert customer.last_response is not None
+    assert customer.last_response.http_status == 202
+    assert api.last_json() == psp.PHOTOS_BODY
+    assert list(api.last_json()) == [
+        "tax_id",
+        "name",
+        "person_type",
+        "document_front_url",
+        "document_back_url",
+        "selfie_url",
+        "external_reference",
+    ]
+    assert api.last.headers["idempotency-key"] == "alta-cliente-8812"
+
+
+def test_psp_customer_create_of_a_company_stays_in_review(
+    client: rayacash.RayaClient, api: MockAPI, call: Caller
+) -> None:
+    # Una persona jurídica no lleva prueba biométrica: la API valida el CUIT contra el Registro
+    # Nacional de Sociedades y la deja en revisión (202 verifying).
+    api.add(202, psp.COMPANY_VERIFYING)
+    company = call(
+        client.psp.customers,
+        "create",
+        external_reference="cliente-8813",
+        person_type="J",
+        name=psp.COMPANY_NAME,
+        tax_id=psp.COMPANY_TAX_ID,
+    )
+    assert company.person_type == "J"
+    assert company.status == "verifying"
+    assert company.metadata == {}
+    assert api.last.content == (
+        b'{"tax_id":"30712345672","name":"Distribuidora Ejemplo S. A.","person_type":"J",'
+        b'"external_reference":"cliente-8813"}'
+    )
+
+
+def test_psp_customer_create_sends_the_body_in_the_order_of_the_api(
+    client: rayacash.RayaClient, api: MockAPI
+) -> None:
+    # Con todo junto (la API lo rechaza: identity_verification va sola), el orden sigue siendo el
+    # de CREATE_FIELDS, con identity_verification primero.
+    api.add(201, psp.CUSTOMER_ACTIVE)
+    customers: Any = client.psp.customers  # una llamada que el type checker ya rechaza
+    customers.create(
+        metadata={"plan": "pro"},
+        external_reference="cliente-8812",
+        **psp.PHOTO_URLS,
+        person_type="F",
+        name=psp.CUSTOMER_NAME,
+        tax_id=psp.TAX_ID,
+        identity_verification=VERIFICATION_ID,
+    )
+    assert list(api.last_json()) == PSP_CREATE_FIELDS
+
+
+def test_psp_customer_create_sends_only_what_you_pass(
+    client: rayacash.RayaClient, api: MockAPI, call: Caller
+) -> None:
+    api.add(201, psp.CUSTOMER_ACTIVE)
+    call(
+        client.psp.customers,
+        "create",
+        **PSP_IDENTITY_PROOF,
+        tax_id=None,
+        name=None,
+        person_type=None,
+        document_front_url=None,
+        document_back_url=None,
+        selfie_url=None,
+        external_reference=None,
+        metadata=None,
+        idempotency_key=None,
+    )
+    assert api.last_json() == PSP_IDENTITY_PROOF
+    assert uuid.UUID(api.last.headers["idempotency-key"]).version == 4
+
+
+@pytest.mark.parametrize(
+    ("base", "kwargs", "error", "message"),
+    [
+        # identity_verification, si viene, es el id de la verificación: un str, no el objeto.
+        (
+            {},
+            {"identity_verification": 1234},
+            TypeError,
+            r"^identity_verification tiene que ser un string con el id de una verificación de "
+            r"Identidad \(idv_…\), no int\.$",
+        ),
+        (
+            psp.PHOTOS_BODY,
+            {
+                "identity_verification": rayacash.IdentityVerification.construct_from(
+                    VERIFICATION_VERIFIED
+                )
+            },
+            TypeError,
+            r"^identity_verification tiene que ser un string .*, no IdentityVerification\.$",
+        ),
+        # Sin identity_verification, tax_id y name son str obligatorios, con la pista de Identidad.
+        (
+            {},
+            {},
+            TypeError,
+            r"^tax_id tiene que ser un str: el CUIL o CUIT de tu cliente, 11 dígitos sin guiones\."
+            + re.escape(PSP_IDENTITY_HINT)
+            + "$",
+        ),
+        (psp.PHOTOS_BODY, {"tax_id": 27123456781}, TypeError, "^tax_id tiene que ser un str"),
+        (PSP_COMPANY, {"tax_id": None}, TypeError, "^tax_id tiene que ser un str"),
+        (
+            PSP_COMPANY,
+            {"identity_verification": None, "tax_id": 30712345672},
+            TypeError,
+            "^tax_id tiene que ser un str",
+        ),
+        (
+            PSP_COMPANY,
+            {"name": None},
+            TypeError,
+            r"^name tiene que ser un str: el nombre y apellido de tu cliente, o su razón social\."
+            + re.escape(PSP_IDENTITY_HINT)
+            + "$",
+        ),
+        (psp.PHOTOS_BODY, {"name": ["María", "Ejemplo"]}, TypeError, "^name tiene que ser un str"),
+        (
+            PSP_IDENTITY_PROOF,
+            {"metadata": [("plan", "pro")]},
+            TypeError,
+            "^metadata tiene que ser un dict de str a str",
+        ),
+        (psp.PHOTOS_BODY, {"metadata": "plan=pro"}, TypeError, "^metadata tiene que ser un dict"),
+        (PSP_COMPANY, {"metadata": {1: "pro"}}, TypeError, "tienen que ser str"),
+        (PSP_IDENTITY_PROOF, {"idempotency_key": "con espacios"}, ValueError, "^idempotency_key"),
+        (PSP_IDENTITY_PROOF, {"idempotency_key": ""}, ValueError, "^idempotency_key"),
+        (PSP_IDENTITY_PROOF, {"idempotency_key": 1234}, TypeError, "^idempotency_key"),
+        # Sin términos ni gender: la API no los recibe (y respondería PARAMETER_UNKNOWN).
+        (
+            PSP_IDENTITY_PROOF,
+            {"terms_accepted_at": "2026-10-24T13:05:00-03:00"},
+            TypeError,
+            "terms_accepted_at",
+        ),
+        (psp.PHOTOS_BODY, {"gender": "F"}, TypeError, "gender"),
+        # Los nombres de Node.js no son de Python.
+        (
+            PSP_IDENTITY_PROOF,
+            {"identityVerification": VERIFICATION_ID},
+            TypeError,
+            "identityVerification",
+        ),
+        (PSP_COMPANY, {"taxId": psp.TAX_ID}, TypeError, "taxId"),
+        (PSP_IDENTITY_PROOF, {"idempotencyKey": "k"}, TypeError, "idempotencyKey"),
+    ],
+)
+def test_psp_customer_create_rejects_bad_shapes_before_sending(
+    client: rayacash.RayaClient,
+    api: MockAPI,
+    call: Caller,
+    base: dict[str, object],
+    kwargs: dict[str, object],
+    error: type[Exception],
+    message: str,
+) -> None:
+    with pytest.raises(error, match=message):
+        call(client.psp.customers, "create", **{**base, **kwargs})
+    assert api.requests == []
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "code", "message", "field"),
+    [
+        # Con identity_verification, un dato o una foto de más (aunque no sea un str: con la
+        # verificación, el SDK no mira tax_id ni name).
+        (
+            {**PSP_IDENTITY_PROOF, "tax_id": psp.TAX_ID},
+            "PARAMETER_INVALID",
+            PSP_ONLY_THE_VERIFICATION,
+            "tax_id",
+        ),
+        (
+            {**PSP_IDENTITY_PROOF, "name": ["María", "Ejemplo"]},
+            "PARAMETER_INVALID",
+            PSP_ONLY_THE_VERIFICATION,
+            "name",
+        ),
+        (
+            {**PSP_IDENTITY_PROOF, "person_type": "F", **psp.PHOTO_URLS},
+            "PARAMETER_INVALID",
+            PSP_ONLY_THE_VERIFICATION,
+            "person_type",
+        ),
+        # La verificación tiene que dar un CUIL válido y no ser de la persona titular de tu cuenta.
+        (
+            PSP_IDENTITY_PROOF,
+            "PARAMETER_INVALID",
+            "Esa verificación no tiene un CUIL válido: creá el cliente con tax_id, name, "
+            "person_type y las fotos.",
+            "identity_verification",
+        ),
+        (
+            PSP_IDENTITY_PROOF,
+            "PARAMETER_INVALID",
+            "identity_verification no puede ser de la persona titular de tu cuenta.",
+            "identity_verification",
+        ),
+        # Uno vacío es un str y viaja: para la API es como no mandarlo, y faltan los datos.
+        (
+            {"identity_verification": ""},
+            "PARAMETER_MISSING",
+            "Falta el parámetro tax_id.",
+            "tax_id",
+        ),
+        # Sin identity_verification: una persona humana sin las fotos, una jurídica con fotos, sin
+        # person_type o con uno que no coincide con el CUIL o CUIT.
+        (
+            {"tax_id": psp.TAX_ID, "name": psp.CUSTOMER_NAME, "person_type": "F"},
+            "PARAMETER_MISSING",
+            "Falta el parámetro document_front_url.",
+            "document_front_url",
+        ),
+        (
+            {**PSP_COMPANY, **psp.PHOTO_URLS},
+            "PARAMETER_INVALID",
+            "document_front_url solo se usa con person_type F.",
+            "document_front_url",
+        ),
+        (
+            {"tax_id": psp.TAX_ID, "name": psp.CUSTOMER_NAME, "person_type": None},
+            "PARAMETER_MISSING",
+            "Falta el parámetro person_type.",
+            "person_type",
+        ),
+        (
+            {**PSP_COMPANY, "person_type": "F", **psp.PHOTO_URLS},
+            "PARAMETER_INVALID",
+            "person_type no coincide con tax_id: un CUIL de persona humana empieza con 20, 23, 24 "
+            "o 27 y un CUIT de persona jurídica, con 30, 33 o 34.",
+            "person_type",
+        ),
+    ],
+)
+def test_psp_customer_create_leaves_the_rest_to_the_api(
+    client: rayacash.RayaClient,
+    api: MockAPI,
+    call: Caller,
+    kwargs: dict[str, Any],
+    code: str,
+    message: str,
+    field: str,
+) -> None:
+    # La coherencia entre identity_verification, los datos, person_type y las fotos la valida la
+    # API y responde con data.field: el SDK no duplica sus reglas y manda lo que vino.
+    api.add_error(400, code, message, {"field": field})
+    with pytest.raises(rayacash.InvalidRequestError) as info:
+        call(client.psp.customers, "create", **kwargs)
+    assert info.value.code == code
+    assert info.value.message == message
+    assert info.value.param == field
+    sent = {name: value for name, value in kwargs.items() if value is not None}
+    assert api.last_json() == sent
+    assert list(api.last_json()) == [name for name in PSP_CREATE_FIELDS if name in sent]
+    assert len(api.requests) == 1  # los 4xx no se reintentan
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "status", "code", "data", "cls"),
+    [
+        (PSP_IDENTITY_PROOF, 403, "PSP_NOT_ACTIVATED", None, rayacash.PermissionDeniedError),
+        # Ya tenés un cliente con ese CUIL o CUIT, o ya usaste esa verificación para otro.
+        (
+            PSP_IDENTITY_PROOF,
+            409,
+            "CUSTOMER_ALREADY_EXISTS",
+            {"customer": psp.CUSTOMER_ID},
+            rayacash.ConflictError,
+        ),
+        (
+            psp.PHOTOS_BODY,
+            409,
+            "CUSTOMER_ALREADY_EXISTS",
+            {"customer": psp.CUSTOMER_ID},
+            rayacash.ConflictError,
+        ),
+        # Solo una persona jurídica: su razón social no es la del Registro Nacional de Sociedades.
+        (
+            PSP_COMPANY,
+            422,
+            "CUSTOMER_DATA_MISMATCH",
+            {"field": "name"},
+            rayacash.UnprocessableEntityError,
+        ),
+        (PSP_COMPANY, 422, "TAX_ID_NOT_REGISTERED", None, rayacash.UnprocessableEntityError),
+    ],
+)
+def test_psp_customer_create_errors_are_not_retried(
+    client: rayacash.RayaClient,
+    api: MockAPI,
+    call: Caller,
+    sleeps: list[float],
+    kwargs: dict[str, Any],
+    status: int,
+    code: str,
+    data: dict[str, Any] | None,
+    cls: type[rayacash.RayaError],
+) -> None:
+    api.add_error(status, code, psp.ERROR_MESSAGES[code], data)
+    with pytest.raises(cls) as info:
+        call(client.psp.customers, "create", **kwargs, idempotency_key="alta-8812")
+    assert type(info.value) is cls  # un 409 de estos no es un IdempotencyError
+    assert info.value.code == code
+    assert info.value.message == psp.ERROR_MESSAGES[code]
+    assert info.value.http_status == status
+    assert info.value.data == data
+    assert info.value.idempotency_key == "alta-8812"
+    assert len(api.requests) == 1
+    assert sleeps == []
+
+
+def test_psp_customer_create_retries_bank_unavailable_with_the_same_key(
+    client: rayacash.RayaClient, api: MockAPI, call: Caller, sleeps: list[float]
+) -> None:
+    # El banco no respondió antes del alta: no se creó nada. Retry-After: 60 todavía se espera, y
+    # el reintento lleva la misma Idempotency-Key.
+    for _ in range(2):
+        api.add_error(
+            503,
+            "BANK_UNAVAILABLE",
+            "No pudimos completar la operación. Probá de nuevo en unos minutos.",
+            headers={"Retry-After": "60"},
+        )
+    api.add(201, psp.CUSTOMER_ACTIVE)
+    customer = call(client.psp.customers, "create", **PSP_IDENTITY_PROOF)
+    assert customer.status == "active"
+    keys = [request.headers["idempotency-key"] for request in api.requests]
+    assert len(keys) == 3
+    assert len(set(keys)) == 1
+    assert sleeps == [60.0, 60.0]
+
+
+def test_psp_customer_limit_is_not_retried(
+    client: rayacash.RayaClient, api: MockAPI, call: Caller, sleeps: list[float]
+) -> None:
+    # El tope de clientes de tu cuenta: 429 con Retry-After: 3600, más de lo que esperamos.
+    api.add_error(
+        429,
+        "RATE_LIMITED",
+        "Llegaste al máximo de clientes de tu cuenta.",
+        {"limit": "customers_live_per_owner"},
+        headers={"Retry-After": "3600"},
+    )
+    with pytest.raises(rayacash.RateLimitError) as info:
+        call(client.psp.customers, "create", **PSP_IDENTITY_PROOF)
+    assert info.value.retry_after == 3600
+    assert info.value.data == {"limit": "customers_live_per_owner"}
+    assert len(api.requests) == 1
+    assert sleeps == []
+
+
+def test_psp_customer_retrieve(client: rayacash.RayaClient, api: MockAPI, call: Caller) -> None:
+    api.add(200, psp.CUSTOMER_WITH_BALANCE)
+    customer = call(client.psp.customers, "retrieve", psp.CUSTOMER_ID)
+    assert type(customer) is rayacash.PspCustomer
+    assert customer.balance == 23649.5
+    assert customer.metadata == {"plan": "pro"}
+    request = api.last
+    assert (request.method, str(request.url)) == (
+        "GET",
+        f"{PSP_CUSTOMERS_URL}/{psp.CUSTOMER_ID}",
+    )
+    assert request.content == b""
+    assert "content-type" not in request.headers
+    assert "idempotency-key" not in request.headers
+    assert request.headers["authorization"] == f"Bearer {TEST_KEY}"
+
+
+def test_psp_customer_rejected_and_failed_have_their_reason(
+    client: rayacash.RayaClient, api: MockAPI
+) -> None:
+    api.add(200, psp.CUSTOMER_REJECTED)
+    rejected = client.psp.customers.retrieve(psp.CUSTOMER_ID)
+    assert rejected.status == "rejected"
+    assert type(rejected.decline_reason) is rayacash.PspCustomer.DeclineReason
+    assert rejected.decline_reason.code == "face_mismatch"
+    api.add(200, psp.CUSTOMER_FAILED)
+    failed = client.psp.customers.retrieve(psp.CUSTOMER_ID)
+    assert failed.decline_reason is not None
+    assert failed.decline_reason.code == "bank_rejected"
+    assert failed.cvu is None
+
+
+def test_psp_customer_not_found(client: rayacash.RayaClient, api: MockAPI, call: Caller) -> None:
+    api.add_error(404, "CUSTOMER_NOT_FOUND", psp.ERROR_MESSAGES["CUSTOMER_NOT_FOUND"])
+    with pytest.raises(rayacash.NotFoundError) as info:
+        call(client.psp.customers, "retrieve", psp.COMPANY_ID)
+    assert info.value.code == "CUSTOMER_NOT_FOUND"
+    assert info.value.http_status == 404
+    assert info.value.message == "No encontramos ese cliente."
+    assert info.value.data is None
+    assert info.value.param is None
+    assert len(api.requests) == 1
+
+
+@pytest.mark.parametrize("method", ["retrieve", "retrieve_balance", *PSP_CUSTOMER_ACTIONS])
+@pytest.mark.parametrize(
+    ("value", "message"),
+    [
+        ("", "no puede estar vacío"),
+        ("   ", "no puede estar vacío"),
+        (".", r'no puede ser "\." ni "\.\."'),
+        ("..", r'no puede ser "\." ni "\.\."'),
+    ],
+)
+def test_psp_customer_ids_fail_before_sending(
+    client: rayacash.RayaClient,
+    api: MockAPI,
+    call: Caller,
+    method: str,
+    value: str,
+    message: str,
+) -> None:
+    with pytest.raises(ValueError, match=rf"^customer_id {message}\.$"):
+        call(client.psp.customers, method, value)
+    assert api.requests == []
+
+
+def test_psp_ids_are_strings_and_are_encoded(
+    client: rayacash.RayaClient, api: MockAPI, call: Caller
+) -> None:
+    for method in ("retrieve", "retrieve_balance", *PSP_CUSTOMER_ACTIONS):
+        with pytest.raises(TypeError, match=r"^customer_id tiene que ser un str, no int\.$"):
+            call(client.psp.customers, method, 1234)
+    with pytest.raises(TypeError, match=r"^transfer_id tiene que ser un str, no int\.$"):
+        call(client.psp.transfers, "retrieve", 1234)
+    assert api.requests == []
+    # Un id sin el formato pspc_ no se valida acá: lo responde la API (404). Viaja codificado.
+    api.add(200, psp.CUSTOMER_ACTIVE)
+    call(client.psp.customers, "retrieve", "../balance")
+    assert api.last.url.raw_path == b"/v1/psp/customers/..%2Fbalance"
+    api.add(200, psp.CUSTOMER_BLOCKED)
+    call(client.psp.customers, "block", "pspc_x/../close")
+    assert api.last.url.raw_path == b"/v1/psp/customers/pspc_x%2F..%2Fclose/block"
+    api.add(200, psp.TRANSFER_INBOUND)
+    call(client.psp.transfers, "retrieve", "pspt x")
+    assert api.last.url.raw_path == b"/v1/psp/transfers/pspt%20x"
+
+
+def test_psp_customer_list(client: rayacash.RayaClient, api: MockAPI, call: Caller) -> None:
+    api.add(200, psp.CUSTOMER_LIST)
+    page = call(
+        client.psp.customers,
+        "list",
+        cursor="c1",
+        limit=50,
+        created_lt="2026-10-25T00:00:00-03:00",
+        created_gte=datetime(2026, 10, 24, 3, tzinfo=timezone.utc),
+        external_reference="cliente 8812",
+        status="active",
+    )
+    assert type(page) is rayacash.ListObject
+    assert [type(customer) for customer in page] == [rayacash.PspCustomer] * 2
+    assert [customer.id for customer in page] == [psp.COMPANY_ID, psp.CUSTOMER_ID]
+    assert page.data[0].person_type == "J"
+    assert page.has_more is False
+    assert page.next_cursor is None
+    request = api.last
+    assert (request.method, request.url.path) == ("GET", "/v1/psp/customers")
+    # La query exacta: en el orden de la API, y el datetime en ISO 8601 con su zona.
+    assert request.url.query == (
+        b"status=active&external_reference=cliente+8812"
+        b"&created_gte=2026-10-24T03%3A00%3A00%2B00%3A00"
+        b"&created_lt=2026-10-25T00%3A00%3A00-03%3A00&limit=50&cursor=c1"
+    )
+    assert request.content == b""
+    assert "idempotency-key" not in request.headers
+
+
+def test_psp_customer_list_without_filters(client: rayacash.RayaClient, api: MockAPI) -> None:
+    api.add(200, {**psp.CUSTOMER_LIST, "has_more": False, "next_cursor": None})
+    client.psp.customers.list()
+    assert str(api.last.url) == PSP_CUSTOMERS_URL
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "error", "message"),
+    [
+        ({"created_gte": datetime(2026, 10, 24)}, ValueError, "^created_gte necesita zona"),
+        ({"created_lt": datetime(2026, 10, 25)}, ValueError, "^created_lt necesita zona"),
+        ({"status": True}, TypeError, "^status no puede ser un bool"),
+        ({"limit": 1.5}, TypeError, "^limit no acepta un float"),
+        ({"external_reference": ["cliente-8812"]}, TypeError, "^external_reference no acepta"),
+        # Sin filtro por CUIL (sería un dato personal en la URL) ni por dirección.
+        ({"tax_id": psp.TAX_ID}, TypeError, "tax_id"),
+        ({"direction": "inbound"}, TypeError, "direction"),
+    ],
+)
+def test_psp_customer_list_rejects_bad_filters_before_sending(
+    client: rayacash.RayaClient,
+    api: MockAPI,
+    call: Caller,
+    kwargs: dict[str, object],
+    error: type[Exception],
+    message: str,
+) -> None:
+    with pytest.raises(error, match=message):
+        call(client.psp.customers, "list", **kwargs)
+    assert api.requests == []
+
+
+def test_psp_customer_retrieve_balance(
+    client: rayacash.RayaClient, api: MockAPI, call: Caller
+) -> None:
+    api.add(200, psp.CUSTOMER_BALANCE)
+    balance = call(client.psp.customers, "retrieve_balance", psp.CUSTOMER_ID)
+    assert type(balance) is rayacash.PspCustomerBalance
+    assert balance.object == "psp.customer_balance"
+    assert balance.customer == psp.CUSTOMER_ID
+    assert balance.available == 23649.5
+    assert balance.transferable == 23649.5
+    request = api.last
+    assert (request.method, str(request.url)) == (
+        "GET",
+        f"{PSP_CUSTOMERS_URL}/{psp.CUSTOMER_ID}/balance",
+    )
+    assert request.content == b""
+    assert "idempotency-key" not in request.headers
+
+
+@pytest.mark.parametrize("action", PSP_CUSTOMER_ACTIONS)
+def test_psp_customer_actions(
+    client: rayacash.RayaClient, api: MockAPI, call: Caller, action: str
+) -> None:
+    api.add(200, psp.CUSTOMER_BLOCKED)
+    customer = call(client.psp.customers, action, psp.CUSTOMER_ID)
+    assert type(customer) is rayacash.PspCustomer
+    request = api.last
+    assert (request.method, str(request.url)) == (
+        "POST",
+        f"{PSP_CUSTOMERS_URL}/{psp.CUSTOMER_ID}/{action}",
+    )
+    assert request.content == b""  # las acciones van sin body
+    assert "content-type" not in request.headers
+    assert request.headers["content-length"] == "0"
+    assert request.headers["authorization"] == f"Bearer {TEST_KEY}"
+    key = request.headers["idempotency-key"]
+    assert uuid.UUID(key).version == 4
+    assert customer.last_response is not None
+    assert customer.last_response.idempotency_key == key
+
+
+@pytest.mark.parametrize("action", PSP_CUSTOMER_ACTIONS)
+def test_psp_customer_actions_with_your_key(
+    client: rayacash.RayaClient, api: MockAPI, call: Caller, action: str
+) -> None:
+    api.add(200, psp.CUSTOMER_ACTIVE)
+    customer = call(client.psp.customers, action, psp.CUSTOMER_ID, idempotency_key=f"{action}-1")
+    assert api.last.headers["idempotency-key"] == f"{action}-1"
+    assert customer.last_response is not None
+    assert customer.last_response.idempotency_key == f"{action}-1"
+    with pytest.raises(ValueError, match=r"^idempotency_key tiene que tener de 1 a 255"):
+        call(client.psp.customers, action, psp.CUSTOMER_ID, idempotency_key="con espacios")
+    # Sin body: no hay parámetros para mandar.
+    with pytest.raises(TypeError, match="reason"):
+        call(client.psp.customers, action, psp.CUSTOMER_ID, reason="mora")
+    assert len(api.requests) == 1
+
+
+def test_psp_customer_block_close_and_recreate(
+    client: rayacash.RayaClient, api: MockAPI, call: Caller
+) -> None:
+    api.add(200, psp.CUSTOMER_BLOCKED)
+    blocked = call(client.psp.customers, "block", psp.CUSTOMER_ID)
+    assert blocked.status == "blocked"
+    assert blocked.blocked_by == "account"
+    api.add(200, psp.CUSTOMER_CLOSED)
+    closed = call(client.psp.customers, "close", psp.CUSTOMER_ID)
+    assert closed.status == "closed"
+    assert closed.cvu is not None
+    assert closed.cvu.status == "closing"  # hasta que el banco confirma la baja
+    assert closed.cvu.closed_at == "2026-10-24T16:40:03Z"
+    assert closed.balance == 23649.5  # dar de baja el CVU conserva el saldo
+    # Recrear: el mismo id y el mismo saldo, con un CVU y un alias nuevos (200, como la API; el
+    # 201 es solo del alta).
+    api.add(200, psp.CUSTOMER_RECREATED)
+    recreated = call(client.psp.customers, "recreate", psp.CUSTOMER_ID)
+    assert (recreated.id, recreated.status, recreated.balance) == (
+        psp.CUSTOMER_ID,
+        "active",
+        23649.5,
+    )
+    assert recreated.cvu is not None
+    assert recreated.cvu.account == psp.RECREATED_ACCOUNT
+    assert recreated.cvu.alias == "maria_ejemplo_nuevo"
+    assert recreated.last_response is not None
+    assert recreated.last_response.http_status == 200
+    # También puede quedar pending mientras terminamos de crear el CVU: 202.
+    api.add(202, {**psp.CUSTOMER_PENDING, "balance": 23649.5})
+    recreated = call(client.psp.customers, "recreate", psp.CUSTOMER_ID)
+    assert recreated.status == "pending"
+    assert recreated.id == psp.CUSTOMER_ID
+    assert recreated.last_response is not None
+    assert recreated.last_response.http_status == 202
+
+
+def test_psp_customer_recreate_documents_the_statuses_of_the_api(
+    client: rayacash.RayaClient,
+) -> None:
+    # help() y el editor muestran el docstring: 200 con active o failed y 202 con pending, como
+    # la API (POST /v1/psp/customers/:id/recreate). El 201 es solo del alta (create).
+    doc = " ".join((client.psp.customers.recreate.__doc__ or "").split())
+    assert (
+        "Vuelve ``active`` (``200``, con el CVU y el alias), ``failed`` (``200``) o ``pending`` "
+        "(``202``, mientras lo terminamos de crear"
+    ) in doc
+    assert "``201``" not in doc
+
+
+def test_psp_customer_unblock_with_a_raya_block_is_a_conflict(
+    client: rayacash.RayaClient, api: MockAPI, call: Caller, sleeps: list[float]
+) -> None:
+    # Un bloqueo de Raya solo lo levanta Raya: 409 con el estado, sin el motivo.
+    api.add_error(
+        409,
+        "CUSTOMER_STATUS_CONFLICT",
+        psp.ERROR_MESSAGES["CUSTOMER_STATUS_CONFLICT"],
+        {"status": "blocked", "blocked_by": "raya"},
+    )
+    with pytest.raises(rayacash.ConflictError) as info:
+        call(client.psp.customers, "unblock", psp.CUSTOMER_ID, idempotency_key="u-1")
+    assert type(info.value) is rayacash.ConflictError  # no es un IdempotencyError
+    assert info.value.code == "CUSTOMER_STATUS_CONFLICT"
+    assert info.value.data == {"status": "blocked", "blocked_by": "raya"}
+    assert info.value.idempotency_key == "u-1"
+    assert len(api.requests) == 1  # no se reintenta
+    assert sleeps == []
+
+
+def test_psp_gets_take_no_idempotency_key(client: rayacash.RayaClient, api: MockAPI) -> None:
+    customers: Any = client.psp.customers  # llamadas que el type checker ya rechaza
+    for method in ("retrieve", "retrieve_balance"):
+        with pytest.raises(TypeError, match="idempotency_key"):
+            getattr(customers, method)(psp.CUSTOMER_ID, idempotency_key="k")
+    transfers: Any = client.psp.transfers
+    with pytest.raises(TypeError, match="idempotency_key"):
+        transfers.retrieve(psp.OUTBOUND_ID, idempotency_key="k")
+    balance: Any = client.psp.balance
+    with pytest.raises(TypeError, match="idempotency_key"):
+        balance.retrieve(idempotency_key="k")
+    assert api.requests == []
+
+
+def test_psp_each_post_without_a_key_gets_its_own(
+    client: rayacash.RayaClient, api: MockAPI, call: Caller
+) -> None:
+    # Una clave por llamada (no por cliente ni por proceso): dos altas iguales son dos altas.
+    for _ in range(2):
+        api.add(201, psp.CUSTOMER_ACTIVE)
+        call(client.psp.customers, "create", **PSP_IDENTITY_PROOF)
+    for action in PSP_CUSTOMER_ACTIONS:
+        api.add(200, psp.CUSTOMER_ACTIVE)
+        call(client.psp.customers, action, psp.CUSTOMER_ID)
+    keys = [request.headers["idempotency-key"] for request in api.requests]
+    assert len(set(keys)) == 6
+    assert all(uuid.UUID(key).version == 4 for key in keys)
+
+
+def test_psp_transfer_create(client: rayacash.RayaClient, api: MockAPI, call: Caller) -> None:
+    api.add(201, psp.TRANSFER_OUTBOUND_PENDING)
+    transfer = call(
+        client.psp.transfers,
+        "create",
+        idempotency_key=IDEMPOTENCY_KEY,
+        destination=psp.SUPPLIER_ACCOUNT,
+        amount=Decimal("18350.50"),
+        customer=psp.CUSTOMER_ID,
+    )
+    assert type(transfer) is rayacash.PspTransfer
+    assert transfer.object == "psp.transfer"
+    assert transfer.customer == psp.CUSTOMER_ID
+    assert transfer.direction == "outbound"
+    assert transfer.status == "pending"
+    assert (transfer.amount, transfer.fee, transfer.net_amount) == (18350.5, 61.37, 18289.13)
+    assert transfer.account == psp.CUSTOMER_ACCOUNT
+    assert type(transfer.counterparty) is rayacash.PspTransfer.Counterparty
+    assert transfer.counterparty.name == "Proveedora Ejemplo S. A."
+    assert transfer.counterparty.account == psp.SUPPLIER_ACCOUNT
+    assert transfer.reference is None
+    request = api.last
+    assert (request.method, str(request.url)) == ("POST", PSP_TRANSFERS_URL)
+    # El body es exactamente customer, amount y destination, en ese orden.
+    assert request.content == (
+        b'{"customer":"pspc_7Hq2Lm9Xw4Tz1Bv8Nc3Kd6Rf","amount":18350.5,'
+        b'"destination":"0000123380736153041182"}'
+    )
+    assert request.headers["content-type"] == "application/json"
+    assert request.headers["idempotency-key"] == IDEMPOTENCY_KEY
+    assert request.headers["authorization"] == f"Bearer {TEST_KEY}"
+    assert transfer.last_response is not None
+    assert transfer.last_response.idempotency_key == IDEMPOTENCY_KEY
+    assert transfer.last_response.http_status == 201
+
+
+def test_psp_transfer_to_a_raya_account_comes_completed(
+    client: rayacash.RayaClient, api: MockAPI
+) -> None:
+    # Entre dos clientes de tu cuenta no hay comisión; a una cuenta de Raya vuelve completed.
+    internal = {
+        **psp.TRANSFER_OUTBOUND_PENDING,
+        "status": "completed",
+        "fee": 0,
+        "net_amount": 18350.5,
+        "counterparty": {
+            "name": psp.COMPANY_NAME,
+            "tax_id": psp.COMPANY_TAX_ID,
+            "account": psp.COMPANY_ACCOUNT,
+            "alias": None,
+        },
+    }
+    api.add(201, internal)
+    transfer = client.psp.transfers.create(
+        customer=psp.CUSTOMER_ID,
+        amount=18350.5,
+        destination=psp.COMPANY_ACCOUNT,
+        idempotency_key="k",
+    )
+    assert transfer.status == "completed"
+    assert transfer.fee == 0
+    assert transfer.reference is None
+
+
+@pytest.mark.parametrize(
+    ("amount", "expected"),
+    [(18350.5, b"18350.5"), ("18350.50", b"18350.5"), (Decimal("61.37"), b"61.37"), (1, b"1")],
+)
+def test_psp_transfer_amount_forms(
+    client: rayacash.RayaClient, api: MockAPI, amount: object, expected: bytes
+) -> None:
+    api.add(201, psp.TRANSFER_OUTBOUND_PENDING)
+    client.psp.transfers.create(
+        customer=psp.CUSTOMER_ID,
+        amount=amount,  # type: ignore[arg-type]
+        destination="proveedor.ejemplo",
+        idempotency_key="k",
+    )
+    assert api.last.content == (
+        b'{"customer":"pspc_7Hq2Lm9Xw4Tz1Bv8Nc3Kd6Rf","amount":'
+        + expected
+        + b',"destination":"proveedor.ejemplo"}'
+    )
+
+
+def test_psp_transfer_create_requires_an_idempotency_key(
+    client: rayacash.RayaClient, api: MockAPI, call: Caller
+) -> None:
+    transfers: Any = client.psp.transfers  # llamadas que el type checker ya rechaza
+    params: dict[str, Any] = {"customer": psp.CUSTOMER_ID, "amount": 1, "destination": "x"}
+    with pytest.raises(TypeError, match="idempotency_key"):
+        call(transfers, "create", **params)
+    with pytest.raises(
+        TypeError,
+        match=(
+            r"^psp\.transfers\.create necesita idempotency_key: generá un UUID v4 con "
+            r"str\(uuid\.uuid4\(\)\), guardalo con la transferencia antes de llamar y reusalo "
+            r"en cada reintento: psp\.transfers\.create\(customer=customer, amount=amount, "
+            r"destination=destination, idempotency_key=idempotency_key\)\.$"
+        ),
+    ):
+        call(transfers, "create", **params, idempotency_key=None)
+    with pytest.raises(ValueError, match=r"^idempotency_key"):
+        call(transfers, "create", **params, idempotency_key="con espacios")
+    with pytest.raises(TypeError, match=r"^idempotency_key tiene que ser un str"):
+        call(transfers, "create", **params, idempotency_key=1234)
+    assert api.requests == []
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "error", "message"),
+    [
+        ({"customer": 1234}, TypeError, "^customer tiene que ser un str"),
+        ({"customer": None}, TypeError, "^customer tiene que ser un str"),
+        ({"destination": 123}, TypeError, "^destination tiene que ser un str"),
+        ({"destination": None}, TypeError, "^destination tiene que ser un str"),
+        ({"amount": True}, TypeError, "^amount no puede ser un bool"),
+        ({"amount": "18.350,50"}, ValueError, "no es un número"),
+        ({"amount": float("nan")}, ValueError, "^amount tiene que ser un número finito"),
+        # El body es exactamente {customer, amount, destination}.
+        ({"description": "Proveedor"}, TypeError, "description"),
+        ({"external_reference": "pago-2087"}, TypeError, "external_reference"),
+    ],
+)
+def test_psp_transfer_create_rejects_bad_shapes_before_sending(
+    client: rayacash.RayaClient,
+    api: MockAPI,
+    call: Caller,
+    kwargs: dict[str, object],
+    error: type[Exception],
+    message: str,
+) -> None:
+    params = {
+        "customer": psp.CUSTOMER_ID,
+        "amount": 1,
+        "destination": "proveedor.ejemplo",
+        "idempotency_key": "k",
+        **kwargs,
+    }
+    with pytest.raises(error, match=message):
+        call(client.psp.transfers, "create", **params)
+    assert api.requests == []
+
+
+def test_psp_transfer_create_retries_with_the_same_key(
+    client: rayacash.RayaClient, api: MockAPI, call: Caller
+) -> None:
+    # Un corte en el medio no transfiere dos veces: el reintento lleva la misma Idempotency-Key.
+    api.fail_with(httpx.ConnectError("cortado"))
+    api.add(201, psp.TRANSFER_OUTBOUND_PENDING)
+    transfer = call(
+        client.psp.transfers,
+        "create",
+        customer=psp.CUSTOMER_ID,
+        amount=18350.5,
+        destination=psp.SUPPLIER_ACCOUNT,
+        idempotency_key=IDEMPOTENCY_KEY,
+    )
+    assert transfer.status == "pending"
+    assert [r.headers["idempotency-key"] for r in api.requests] == [IDEMPOTENCY_KEY] * 2
+
+
+@pytest.mark.parametrize(
+    ("status", "code", "message", "data", "cls"),
+    [
+        # Tu saldo manda: se chequea primero, aunque el cliente tenga saldo.
+        (
+            422,
+            "INSUFFICIENT_BALANCE",
+            "No tenés saldo suficiente para esta operación.",
+            None,
+            rayacash.UnprocessableEntityError,
+        ),
+        (
+            422,
+            "CUSTOMER_INSUFFICIENT_BALANCE",
+            psp.ERROR_MESSAGES["CUSTOMER_INSUFFICIENT_BALANCE"],
+            None,
+            rayacash.UnprocessableEntityError,
+        ),
+        (
+            422,
+            "DESTINATION_NOT_SUPPORTED",
+            "La cuenta de destino es la misma que la de origen.",
+            None,
+            rayacash.UnprocessableEntityError,
+        ),
+        (
+            404,
+            "CUSTOMER_NOT_FOUND",
+            psp.ERROR_MESSAGES["CUSTOMER_NOT_FOUND"],
+            {"field": "customer"},
+            rayacash.NotFoundError,
+        ),
+        (
+            409,
+            "CUSTOMER_STATUS_CONFLICT",
+            psp.ERROR_MESSAGES["CUSTOMER_STATUS_CONFLICT"],
+            {"status": "blocked", "blocked_by": "account"},
+            rayacash.ConflictError,
+        ),
+        (
+            403,
+            "PSP_NOT_ACTIVATED",
+            psp.ERROR_MESSAGES["PSP_NOT_ACTIVATED"],
+            None,
+            rayacash.PermissionDeniedError,
+        ),
+        (
+            403,
+            "TRANSFERS_BLOCKED",
+            "Tu cuenta no puede enviar transferencias en este momento. Escribinos a "
+            "soporte@raya.cash.",
+            None,
+            rayacash.PermissionDeniedError,
+        ),
+    ],
+)
+def test_psp_transfer_errors_are_not_retried(
+    client: rayacash.RayaClient,
+    api: MockAPI,
+    call: Caller,
+    sleeps: list[float],
+    status: int,
+    code: str,
+    message: str,
+    data: dict[str, Any] | None,
+    cls: type[rayacash.RayaError],
+) -> None:
+    api.add_error(status, code, message, data)
+    with pytest.raises(cls) as info:
+        call(
+            client.psp.transfers,
+            "create",
+            customer=psp.CUSTOMER_ID,
+            amount=10**9,
+            destination=psp.SUPPLIER_ACCOUNT,
+            idempotency_key="k",
+        )
+    assert type(info.value) is cls
+    assert info.value.code == code
+    assert info.value.message == message
+    assert info.value.data == data
+    assert info.value.idempotency_key == "k"
+    assert len(api.requests) == 1
+    assert sleeps == []
+
+
+def test_psp_transfer_customer_not_found_names_the_field(
+    client: rayacash.RayaClient, api: MockAPI
+) -> None:
+    api.add_error(
+        404, "CUSTOMER_NOT_FOUND", psp.ERROR_MESSAGES["CUSTOMER_NOT_FOUND"], {"field": "customer"}
+    )
+    with pytest.raises(rayacash.NotFoundError) as info:
+        client.psp.transfers.create(
+            customer=psp.COMPANY_ID, amount=1, destination="x", idempotency_key="k"
+        )
+    assert info.value.param == "customer"  # NotFoundError es un InvalidRequestError
+
+
+def test_psp_transfer_retrieve(client: rayacash.RayaClient, api: MockAPI, call: Caller) -> None:
+    api.add(200, psp.TRANSFER_OUTBOUND_COMPLETED)
+    transfer = call(client.psp.transfers, "retrieve", psp.OUTBOUND_ID)
+    assert type(transfer) is rayacash.PspTransfer
+    assert transfer.status == "completed"
+    assert transfer.reference == "P3W7K1N9X5Q2T8R4V6Z0MC"
+    request = api.last
+    assert (request.method, str(request.url)) == (
+        "GET",
+        f"{PSP_TRANSFERS_URL}/{psp.OUTBOUND_ID}",
+    )
+    assert request.content == b""
+    assert "idempotency-key" not in request.headers
+
+
+def test_psp_transfer_not_found(client: rayacash.RayaClient, api: MockAPI, call: Caller) -> None:
+    api.add_error(404, "TRANSFER_NOT_FOUND", "No encontramos esa transferencia.")
+    with pytest.raises(rayacash.NotFoundError) as info:
+        call(client.psp.transfers, "retrieve", psp.INBOUND_ID)
+    assert info.value.code == "TRANSFER_NOT_FOUND"
+    assert info.value.data is None
+    assert len(api.requests) == 1
+
+
+def test_psp_transfer_list(client: rayacash.RayaClient, api: MockAPI, call: Caller) -> None:
+    api.add(200, psp.TRANSFER_LIST)
+    page = call(
+        client.psp.transfers,
+        "list",
+        cursor="c1",
+        limit=10,
+        created_lt="2026-10-25T00:00:00-03:00",
+        created_gte=datetime(2026, 10, 24, 3, tzinfo=timezone.utc),
+        status="completed",
+        direction="inbound",
+        customer=psp.CUSTOMER_ID,
+    )
+    assert type(page) is rayacash.ListObject
+    assert [type(transfer) for transfer in page] == [rayacash.PspTransfer] * 2
+    assert [transfer.direction for transfer in page] == ["outbound", "inbound"]
+    assert page.data[1].description == "Varios"  # el concepto que informó el banco
+    assert page.has_more is False
+    assert page.next_cursor is None
+    request = api.last
+    assert (request.method, request.url.path) == ("GET", "/v1/psp/transfers")
+    assert request.url.query == (
+        b"customer=pspc_7Hq2Lm9Xw4Tz1Bv8Nc3Kd6Rf&direction=inbound&status=completed"
+        b"&created_gte=2026-10-24T03%3A00%3A00%2B00%3A00"
+        b"&created_lt=2026-10-25T00%3A00%3A00-03%3A00&limit=10&cursor=c1"
+    )
+    assert request.content == b""
+    assert "idempotency-key" not in request.headers
+
+
+def test_psp_transfer_list_without_filters(client: rayacash.RayaClient, api: MockAPI) -> None:
+    api.add(200, {**psp.TRANSFER_LIST, "has_more": False, "next_cursor": None})
+    client.psp.transfers.list()
+    assert str(api.last.url) == PSP_TRANSFERS_URL
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "error", "message"),
+    [
+        ({"created_gte": datetime(2026, 10, 24)}, ValueError, "^created_gte necesita zona"),
+        ({"customer": [psp.CUSTOMER_ID]}, TypeError, "^customer no acepta un list"),
+        ({"direction": True}, TypeError, "^direction no puede ser un bool"),
+        ({"limit": 1.5}, TypeError, "^limit no acepta un float"),
+        ({"account": psp.CUSTOMER_ACCOUNT}, TypeError, "account"),
+    ],
+)
+def test_psp_transfer_list_rejects_bad_filters_before_sending(
+    client: rayacash.RayaClient,
+    api: MockAPI,
+    call: Caller,
+    kwargs: dict[str, object],
+    error: type[Exception],
+    message: str,
+) -> None:
+    with pytest.raises(error, match=message):
+        call(client.psp.transfers, "list", **kwargs)
+    assert api.requests == []
+
+
+def test_psp_balance_retrieve(client: rayacash.RayaClient, api: MockAPI, call: Caller) -> None:
+    api.add(200, psp.PSP_BALANCE)
+    balance = call(client.psp.balance, "retrieve")
+    assert type(balance) is rayacash.PspBalance
+    assert balance.object == "psp.balance"
+    assert balance.available == 640200.5
+    assert balance.customers_balance == 512875.25
+    assert balance.currency == "ARS"
+    request = api.last
+    assert (request.method, str(request.url)) == ("GET", "https://api.raya.cash/v1/psp/balance")
+    assert request.content == b""
+    assert "idempotency-key" not in request.headers
+    assert request.headers["authorization"] == f"Bearer {TEST_KEY}"
+
+
+def test_psp_balance_takes_no_filters(client: rayacash.RayaClient, api: MockAPI) -> None:
+    balance: Any = client.psp.balance
+    with pytest.raises(TypeError, match="customer"):
+        balance.retrieve(customer=psp.CUSTOMER_ID)
+    assert api.requests == []
+
+
+def test_psp_options_per_call(
+    client: rayacash.RayaClient, api: MockAPI, sleeps: list[float]
+) -> None:
+    api.add_error(503, "TEMPORARILY_UNAVAILABLE", headers={"Retry-After": "5"})
+    with pytest.raises(rayacash.APIError) as info:
+        client.psp.customers.retrieve(
+            psp.CUSTOMER_ID,
+            options={"api_key": OTHER_KEY, "timeout": 10, "max_network_retries": 0},
+        )
+    assert info.value.code == "TEMPORARILY_UNAVAILABLE"
+    assert api.last.headers["authorization"] == f"Bearer {OTHER_KEY}"
+    assert api.last.extensions["timeout"]["read"] == 10.0
+    assert len(api.requests) == 1
+    assert sleeps == []
+
+
+def test_psp_api_unavailable_is_not_retried(
+    client: rayacash.RayaClient, api: MockAPI, call: Caller, sleeps: list[float]
+) -> None:
+    # Raya PSP apagado (o pausado) responde 503 API_UNAVAILABLE: un interruptor, no un corte.
+    api.add_error(
+        503,
+        "API_UNAVAILABLE",
+        "La API no está disponible en este momento. Probá de nuevo más tarde.",
+    )
+    with pytest.raises(rayacash.APIError) as info:
+        call(client.psp.balance, "retrieve")
+    assert info.value.code == "API_UNAVAILABLE"
+    assert len(api.requests) == 1
+    assert sleeps == []
+
+
+def test_psp_is_not_available_in_the_sandbox_yet(api: MockAPI, call: Caller) -> None:
+    # Una clave de prueba llega a la API, que responde 403: Raya PSP todavía no está disponible
+    # en el sandbox.
+    client = api.client(SANDBOX_KEY)
+    api.add_error(
+        403,
+        "SANDBOX_NOT_SUPPORTED",
+        "Este endpoint todavía no está disponible en un sandbox.",
+    )
+    with pytest.raises(rayacash.PermissionDeniedError) as info:
+        call(client.psp.customers, "create", **PSP_IDENTITY_PROOF)
+    assert info.value.code == "SANDBOX_NOT_SUPPORTED"
+    assert api.last.headers["authorization"] == f"Bearer {SANDBOX_KEY}"
+    assert len(api.requests) == 1

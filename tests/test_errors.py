@@ -9,13 +9,18 @@ import pytest
 
 import rayacash
 from rayacash._error import error_from_response
+from tests import fixtures_psp as psp
 
-# Los 51 códigos del contrato (api.md › Códigos de error): los 32 de siempre, los 11 de Raya
-# Connect (apps y cuentas conectadas), los 2 de los payouts, los 4 de Identidad (con
-# SANDBOX_NOT_SUPPORTED, el 403 de una credencial de prueba en un endpoint que todavía no está
-# disponible en el sandbox, e IDENTITY_NOT_ACTIVATED, al final de los 403) y los 2 del helper del
-# sandbox (SANDBOX_ONLY, después de SANDBOX_NOT_SUPPORTED, y PAYMENT_NOT_PENDING, después de
-# PAYMENT_NOT_REFUNDABLE). El test no mira el orden.
+# Los 58 códigos del contrato (api.md › Códigos de error, los mismos que fija
+# publicapi/tests_catalog.py de la API): los 32 de siempre, los 11 de Raya Connect (apps y cuentas
+# conectadas), los 2 de los payouts, los 4 de Identidad (con SANDBOX_NOT_SUPPORTED, el 403 de una
+# credencial de prueba en un endpoint que todavía no está disponible en el sandbox, e
+# IDENTITY_NOT_ACTIVATED, al final de los 403), los 2 del helper del sandbox (SANDBOX_ONLY, después
+# de SANDBOX_NOT_SUPPORTED, y PAYMENT_NOT_PENDING, después de PAYMENT_NOT_REFUNDABLE) y los 7 de
+# Raya PSP, cada uno al final de su bloque de HTTP: PSP_NOT_ACTIVATED (403), CUSTOMER_NOT_FOUND
+# (404), CUSTOMER_ALREADY_EXISTS y CUSTOMER_STATUS_CONFLICT (409), y
+# CUSTOMER_INSUFFICIENT_BALANCE, CUSTOMER_DATA_MISMATCH y TAX_ID_NOT_REGISTERED (422). El test no
+# mira el orden.
 CATALOG: list[tuple[str, int, type[rayacash.RayaError]]] = [
     ("INVALID_JSON", 400, rayacash.InvalidRequestError),
     ("PARAMETER_MISSING", 400, rayacash.InvalidRequestError),
@@ -42,6 +47,7 @@ CATALOG: list[tuple[str, int, type[rayacash.RayaError]]] = [
     ("SANDBOX_NOT_SUPPORTED", 403, rayacash.PermissionDeniedError),
     ("SANDBOX_ONLY", 403, rayacash.PermissionDeniedError),
     ("IDENTITY_NOT_ACTIVATED", 403, rayacash.PermissionDeniedError),
+    ("PSP_NOT_ACTIVATED", 403, rayacash.PermissionDeniedError),
     ("TRANSFER_NOT_FOUND", 404, rayacash.NotFoundError),
     ("PAYMENT_NOT_FOUND", 404, rayacash.NotFoundError),
     ("NOT_FOUND", 404, rayacash.NotFoundError),
@@ -49,12 +55,15 @@ CATALOG: list[tuple[str, int, type[rayacash.RayaError]]] = [
     ("ORDER_NOT_FOUND", 404, rayacash.NotFoundError),
     ("PAYOUT_NOT_FOUND", 404, rayacash.NotFoundError),
     ("VERIFICATION_NOT_FOUND", 404, rayacash.NotFoundError),
+    ("CUSTOMER_NOT_FOUND", 404, rayacash.NotFoundError),
     ("METHOD_NOT_ALLOWED", 405, rayacash.InvalidRequestError),
     ("IDEMPOTENCY_KEY_REUSED", 409, rayacash.IdempotencyError),
     ("IDEMPOTENCY_KEY_IN_USE", 409, rayacash.IdempotencyError),
     ("PAYMENT_NOT_REFUNDABLE", 409, rayacash.ConflictError),
     ("PAYMENT_NOT_PENDING", 409, rayacash.ConflictError),
     ("VERIFICATION_NOT_CANCELABLE", 409, rayacash.ConflictError),
+    ("CUSTOMER_ALREADY_EXISTS", 409, rayacash.ConflictError),
+    ("CUSTOMER_STATUS_CONFLICT", 409, rayacash.ConflictError),
     ("REQUEST_TOO_LARGE", 413, rayacash.InvalidRequestError),
     ("INSUFFICIENT_BALANCE", 422, rayacash.UnprocessableEntityError),
     ("LIMIT_EXCEEDED", 422, rayacash.UnprocessableEntityError),
@@ -62,6 +71,9 @@ CATALOG: list[tuple[str, int, type[rayacash.RayaError]]] = [
     ("DESTINATION_INACTIVE", 422, rayacash.UnprocessableEntityError),
     ("DESTINATION_NOT_SUPPORTED", 422, rayacash.UnprocessableEntityError),
     ("REFUND_FAILED", 422, rayacash.UnprocessableEntityError),
+    ("CUSTOMER_INSUFFICIENT_BALANCE", 422, rayacash.UnprocessableEntityError),
+    ("CUSTOMER_DATA_MISMATCH", 422, rayacash.UnprocessableEntityError),
+    ("TAX_ID_NOT_REGISTERED", 422, rayacash.UnprocessableEntityError),
     ("RATE_LIMITED", 429, rayacash.RateLimitError),
     ("INTERNAL_ERROR", 500, rayacash.APIError),
     ("BANK_UNAVAILABLE", 503, rayacash.APIError),
@@ -86,9 +98,9 @@ def make_error(
     )
 
 
-def test_catalog_has_the_51_codes() -> None:
-    assert len({code for code, _, _ in CATALOG}) == 51
-    assert len(CATALOG) == 51
+def test_catalog_has_the_58_codes() -> None:
+    assert len({code for code, _, _ in CATALOG}) == 58
+    assert len(CATALOG) == 58
 
 
 @pytest.mark.parametrize(("code", "status", "cls"), CATALOG)
@@ -230,6 +242,52 @@ def test_the_verification_limit_comes_as_rate_limited() -> None:
     assert type(error) is rayacash.RateLimitError
     assert error.retry_after == 3600.0
     assert error.data == {"limit": "daily"}
+
+
+# Los 7 de Raya PSP, con su status, su data y el mensaje literal de la API.
+PSP_CODES: list[tuple[str, int, Any, type[rayacash.RayaError]]] = [
+    ("PSP_NOT_ACTIVATED", 403, None, rayacash.PermissionDeniedError),
+    ("CUSTOMER_NOT_FOUND", 404, None, rayacash.NotFoundError),
+    ("CUSTOMER_NOT_FOUND", 404, {"field": "customer"}, rayacash.NotFoundError),
+    ("CUSTOMER_ALREADY_EXISTS", 409, {"customer": psp.CUSTOMER_ID}, rayacash.ConflictError),
+    (
+        "CUSTOMER_STATUS_CONFLICT",
+        409,
+        {"status": "blocked", "blocked_by": "raya"},
+        rayacash.ConflictError,
+    ),
+    (
+        "CUSTOMER_STATUS_CONFLICT",
+        409,
+        {"status": "verifying", "blocked_by": None},
+        rayacash.ConflictError,
+    ),
+    ("CUSTOMER_INSUFFICIENT_BALANCE", 422, None, rayacash.UnprocessableEntityError),
+    # Solo una persona jurídica: su razón social no es la del Registro Nacional de Sociedades.
+    ("CUSTOMER_DATA_MISMATCH", 422, {"field": "name"}, rayacash.UnprocessableEntityError),
+    ("TAX_ID_NOT_REGISTERED", 422, None, rayacash.UnprocessableEntityError),
+]
+
+
+def test_the_psp_codes_are_in_the_catalog() -> None:
+    assert {code for code, _, _, _ in PSP_CODES} == set(psp.ERROR_MESSAGES)
+    catalog = {code: (status, cls) for code, status, cls in CATALOG}
+    for code, status, _, cls in PSP_CODES:
+        assert catalog[code] == (status, cls), code
+
+
+@pytest.mark.parametrize(("code", "status", "data", "cls"), PSP_CODES)
+def test_the_psp_codes_keep_their_message_and_data(
+    code: str, status: int, data: Any, cls: type[rayacash.RayaError]
+) -> None:
+    message = psp.ERROR_MESSAGES[code]
+    error = make_error(status, {"error": {"code": code, "message": message, "data": data}})
+    assert type(error) is cls  # un 409 de Raya PSP no es un IdempotencyError
+    assert error.code == code
+    assert error.message == message
+    assert error.data == data
+    if isinstance(error, rayacash.InvalidRequestError):
+        assert error.param == (data or {}).get("field")
 
 
 @pytest.mark.parametrize(
