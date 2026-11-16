@@ -17,6 +17,7 @@ from rayacash._identity_verification_service import IdentityService
 from rayacash._list_object import ListObject
 from rayacash._oauth_service import OAuthService
 from rayacash._payment_service import PaymentService
+from rayacash._psp_service import PspService
 from rayacash._raya_object import RayaObject
 from rayacash._request_options import RequestOptions, validate_options
 from rayacash._requestor import (
@@ -92,6 +93,9 @@ class RayaClient:
     Para verificar la identidad de tus clientes (Identidad), ``client.identity.verifications``, con
     tu clave secreta.
 
+    Si tu cuenta de empresa tiene Raya PSP activado, ``client.psp`` crea cuentas con CVU a nombre
+    de tus clientes y transfiere en su nombre, también con tu clave secreta.
+
     En un sandbox, con su clave secreta de prueba (``raya_sk_test_…``), la misma API crea pagos de
     prueba y ``client.test_helpers.payments.simulate_transfer()`` simula que llegó la
     transferencia, sin mover plata.
@@ -119,6 +123,7 @@ class RayaClient:
     users: UserService
     connect: ConnectService
     identity: IdentityService
+    psp: PspService
     test_helpers: SandboxHelpersService
 
     def __init__(
@@ -161,6 +166,7 @@ class RayaClient:
         self.users = UserService(self._requestor)
         self.connect = ConnectService(self._requestor)
         self.identity = IdentityService(self._requestor)
+        self.psp = PspService(self._requestor)
         self.test_helpers = SandboxHelpersService(self._requestor)
 
     @property
@@ -267,8 +273,8 @@ class RayaClient:
     ) -> Event:
         """Como ``rayacash.Webhook.construct_event``, con el evento ligado a este cliente.
 
-        Así, ``event.data.object.refund()`` (o ``.cancel()``, en una ``IdentityVerification``) usa
-        la clave de este cliente.
+        Así, ``event.data.object.refund()`` (o ``.cancel()``, en una ``IdentityVerification``, o
+        ``.block()``, en un ``PspCustomer``) usa la clave de este cliente.
         """
         return construct_event(payload, sig_header, secret, tolerance, requestor=self._requestor)
 

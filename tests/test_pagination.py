@@ -6,6 +6,7 @@ from typing import Any
 import pytest
 
 import rayacash
+from tests import fixtures_psp as psp
 from tests.fixtures import transfer_page
 from tests.fixtures_apps import PAYOUT_COMPLETED
 from tests.fixtures_identity import verification_page
@@ -220,4 +221,106 @@ def test_identity_verifications_global_auto_paging(api: MockAPI) -> None:
         "v5",
     ]
     assert [r.url.params.get("cursor") for r in api.requests] == [None, "c1", "c2"]
+    assert {r.headers["authorization"] for r in api.requests} == {f"Bearer {TEST_KEY}"}
+
+
+# --- Raya PSP: psp.customers.list y psp.transfers.list ------------------------------------------
+
+
+def queue_three_customer_pages(api: MockAPI) -> None:
+    api.add(200, psp.customer_page(["c1", "c2"], next_cursor="k1"))
+    api.add(200, psp.customer_page(["c3", "c4"], next_cursor="k2"))
+    api.add(200, psp.customer_page(["c5"], next_cursor=None))
+
+
+def test_psp_customers_auto_paging(client: rayacash.RayaClient, api: MockAPI) -> None:
+    queue_three_customer_pages(api)
+    page = client.psp.customers.list(status="active", limit=2, options={"api_key": OTHER_KEY})
+    customers = list(page.auto_paging_iter())
+    assert [customer.id for customer in customers] == ["c1", "c2", "c3", "c4", "c5"]
+    assert all(type(customer) is rayacash.PspCustomer for customer in customers)
+    assert len(api.requests) == 3  # al llegar al final no pide otra página
+    assert [dict(r.url.params) for r in api.requests] == [
+        {"status": "active", "limit": "2"},
+        {"status": "active", "limit": "2", "cursor": "k1"},
+        {"status": "active", "limit": "2", "cursor": "k2"},
+    ]
+    assert {r.url.path for r in api.requests} == {"/v1/psp/customers"}
+    # Las opciones de la primera request también viajan en las siguientes.
+    assert {r.headers["authorization"] for r in api.requests} == {f"Bearer {OTHER_KEY}"}
+
+
+def test_psp_customers_async_auto_paging(client: rayacash.RayaClient, api: MockAPI) -> None:
+    queue_three_customer_pages(api)
+
+    async def collect() -> list[str]:
+        page = await client.psp.customers.list_async(external_reference="cliente-8812")
+        return [customer.id async for customer in page.auto_paging_iter()]
+
+    assert asyncio.run(collect()) == ["c1", "c2", "c3", "c4", "c5"]
+    assert [dict(r.url.params) for r in api.requests][1:] == [
+        {"external_reference": "cliente-8812", "cursor": "k1"},
+        {"external_reference": "cliente-8812", "cursor": "k2"},
+    ]
+
+
+def test_psp_customers_paging_can_stop_halfway(client: rayacash.RayaClient, api: MockAPI) -> None:
+    queue_three_customer_pages(api)
+    ids: list[str] = []
+    for customer in client.psp.customers.list().auto_paging_iter():
+        ids.append(customer.id)
+        if len(ids) == 3:
+            break
+    assert ids == ["c1", "c2", "c3"]
+    assert len(api.requests) == 2
+    assert api.pending == 1
+
+
+def test_psp_transfers_auto_paging_keeps_the_customer_filter(
+    client: rayacash.RayaClient, api: MockAPI
+) -> None:
+    api.add(200, psp.transfer_page(["t1", "t2"], next_cursor="k1"))
+    api.add(200, psp.transfer_page(["t3"], next_cursor=None))
+    page = client.psp.transfers.list(customer=psp.CUSTOMER_ID, direction="inbound", limit=2)
+    transfers = list(page.auto_paging_iter())
+    assert [transfer.id for transfer in transfers] == ["t1", "t2", "t3"]
+    assert all(type(transfer) is rayacash.PspTransfer for transfer in transfers)
+    assert [dict(r.url.params) for r in api.requests] == [
+        {"customer": psp.CUSTOMER_ID, "direction": "inbound", "limit": "2"},
+        {"customer": psp.CUSTOMER_ID, "direction": "inbound", "limit": "2", "cursor": "k1"},
+    ]
+    assert {r.url.path for r in api.requests} == {"/v1/psp/transfers"}
+
+
+def test_psp_transfers_async_auto_paging(client: rayacash.RayaClient, api: MockAPI) -> None:
+    api.add(200, psp.transfer_page(["t1"], next_cursor="k1"))
+    api.add(200, psp.transfer_page(["t2"], next_cursor=None))
+
+    async def collect() -> list[str]:
+        page = await client.psp.transfers.list_async(status="completed")
+        return [transfer.id async for transfer in page.auto_paging_iter()]
+
+    assert asyncio.run(collect()) == ["t1", "t2"]
+    assert api.requests[1].url.params["cursor"] == "k1"
+
+
+def test_psp_next_page_on_the_last_page(client: rayacash.RayaClient, api: MockAPI) -> None:
+    api.add(200, psp.transfer_page(["t1"], next_cursor=None))
+    page = client.psp.transfers.list(customer=psp.CUSTOMER_ID)
+    assert page.next_page().data == []
+    assert asyncio.run(page.next_page_async()).data == []
+    assert len(api.requests) == 1
+
+
+def test_psp_global_auto_paging(api: MockAPI) -> None:
+    rayacash.api_key = TEST_KEY
+    rayacash.http_client = api.sync_client()
+    queue_three_customer_pages(api)
+    page = rayacash.PspCustomer.list(limit=2)
+    assert [customer.id for customer in page.auto_paging_iter()] == ["c1", "c2", "c3", "c4", "c5"]
+    assert [r.url.params.get("cursor") for r in api.requests] == [None, "k1", "k2"]
+    api.add(200, psp.transfer_page(["t1"], next_cursor="k1"))
+    api.add(200, psp.transfer_page(["t2"], next_cursor=None))
+    transfers = rayacash.PspTransfer.list(customer=psp.CUSTOMER_ID)
+    assert [transfer.id for transfer in transfers.auto_paging_iter()] == ["t1", "t2"]
     assert {r.headers["authorization"] for r in api.requests} == {f"Bearer {TEST_KEY}"}

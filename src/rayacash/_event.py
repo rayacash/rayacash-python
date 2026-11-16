@@ -7,16 +7,21 @@ from typing_extensions import Literal
 from rayacash._connect_order import ConnectOrder
 from rayacash._identity_verification import IdentityVerification
 from rayacash._payment import Payment
+from rayacash._psp_customer import PspCustomer
+from rayacash._psp_document_request import PspDocumentRequest
+from rayacash._psp_transfer import PspTransfer
 from rayacash._raya_object import RayaObject
 from rayacash._transfer import Transfer
 
 #: Los tipos de evento que existen hoy. Pueden sumarse otros: tu código tiene que ignorarlos.
 #: Los ``connect.order.*`` (Raya Connect) le llegan al dueño de la app; la cuenta conectada
 #: recibe sus ``payment.*``. Los ``identity.verification.*`` (Identidad) avisan cuando una
-#: verificación llega a un estado final. Los ``checkout.*`` del final son legacy, sus nombres en
-#: la 1.1.0: la API ya no los emite (solo vuelven si reenviás desde el dashboard un evento de
-#: antes del cambio) y quedan acá para que el código escrito para la 1.1.0 siga tipando.
-#: Compará ``event.type`` con los ``connect.order.*``.
+#: verificación llega a un estado final. Los ``psp.*`` (Raya PSP, solo con Raya PSP aprobado)
+#: avisan los cambios de los clientes de tu empresa, sus transferencias y los pedidos de
+#: documentación sobre ellos. Los ``checkout.*`` del final son legacy, sus nombres en la 1.1.0: la
+#: API ya no los emite (solo vuelven si reenviás desde el dashboard un evento de antes del cambio)
+#: y quedan acá para que el código escrito para la 1.1.0 siga tipando. Compará ``event.type`` con
+#: los ``connect.order.*``.
 EventType = Literal[
     "transfer.received",
     "transfer.sent",
@@ -33,6 +38,18 @@ EventType = Literal[
     "identity.verification.declined",
     "identity.verification.expired",
     "identity.verification.canceled",
+    "psp.customer.activated",
+    "psp.customer.updated",
+    "psp.customer.failed",
+    "psp.customer.rejected",
+    "psp.customer.blocked",
+    "psp.customer.unblocked",
+    "psp.customer.closed",
+    "psp.transfer.received",
+    "psp.transfer.sent",
+    "psp.transfer.failed",
+    "psp.document_request.created",
+    "psp.document_request.closed",
     "webhook.test",
     # Legacy (1.1.0): la API ya no los emite.
     "checkout.created",
@@ -45,8 +62,9 @@ EventType = Literal[
 class Event(RayaObject):
     """Un evento de webhook. Armalo con ``rayacash.Webhook.construct_event(...)``.
 
-    ``event.data.object`` es el ``Transfer``, el ``Payment``, el ``ConnectOrder`` o la
-    ``IdentityVerification`` (siempre con ``person`` en ``None``) tal como estaba cuando ocurrió
+    ``event.data.object`` es el ``Transfer``, el ``Payment``, el ``ConnectOrder``, la
+    ``IdentityVerification`` (siempre con ``person`` en ``None``) o, en Raya PSP, el
+    ``PspCustomer``, el ``PspTransfer`` o el ``PspDocumentRequest``, tal como estaba cuando ocurrió
     el evento. ``webhook.test`` (el botón «Enviar evento de prueba») trae
     ``{"object": "test", …}``: respondé 2xx e ignoralo.
 
@@ -56,7 +74,16 @@ class Event(RayaObject):
     OBJECT_NAME = "event"
 
     class Data(RayaObject):
-        object: Transfer | Payment | ConnectOrder | IdentityVerification | RayaObject
+        object: (
+            Transfer
+            | Payment
+            | ConnectOrder
+            | IdentityVerification
+            | PspCustomer
+            | PspTransfer
+            | PspDocumentRequest
+            | RayaObject
+        )
 
     _inner_class_types: ClassVar[dict[str, type[RayaObject]]] = {"data": Data}
 

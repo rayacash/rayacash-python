@@ -8,6 +8,7 @@ from typing_extensions import get_args
 
 import rayacash
 from rayacash import _webhook
+from tests import fixtures_psp as psp
 from tests.fixtures import (
     EVENT_PAYMENT_SUCCEEDED,
     WEBHOOK_OLD_SECRET,
@@ -323,5 +324,71 @@ def test_event_type_lists_the_identity_events() -> None:
     assert [name for name in names if name.startswith("identity.")] == [
         name for name, _ in IDENTITY_EVENTS
     ]
-    # Antes de webhook.test y de los checkout.* legacy, que van al final.
-    assert names.index("identity.verification.canceled") + 1 == names.index("webhook.test")
+    # Antes de los psp.* (Raya PSP), de webhook.test y de los checkout.* legacy, que van al final.
+    canceled = names.index("identity.verification.canceled")
+    assert canceled + 1 == names.index("psp.customer.activated")
+    assert canceled < names.index("webhook.test")
+
+
+# --- Raya PSP: los eventos psp.* -----------------------------------------------------------------
+
+# Los 12 tipos, en el orden del catálogo de la API (webhooks/events.py, PSP_EVENT_TYPES), con el
+# data.object de cada uno.
+PSP_EVENTS: list[tuple[str, dict[str, Any], type[rayacash.RayaObject]]] = [
+    ("psp.customer.activated", psp.CUSTOMER_ACTIVE, rayacash.PspCustomer),
+    ("psp.customer.updated", psp.CUSTOMER_WITH_BALANCE, rayacash.PspCustomer),
+    ("psp.customer.failed", psp.CUSTOMER_FAILED, rayacash.PspCustomer),
+    ("psp.customer.rejected", psp.CUSTOMER_REJECTED, rayacash.PspCustomer),
+    ("psp.customer.blocked", psp.CUSTOMER_BLOCKED, rayacash.PspCustomer),
+    ("psp.customer.unblocked", psp.CUSTOMER_WITH_BALANCE, rayacash.PspCustomer),
+    ("psp.customer.closed", psp.CUSTOMER_CLOSED, rayacash.PspCustomer),
+    ("psp.transfer.received", psp.TRANSFER_INBOUND, rayacash.PspTransfer),
+    ("psp.transfer.sent", psp.TRANSFER_OUTBOUND_COMPLETED, rayacash.PspTransfer),
+    ("psp.transfer.failed", psp.TRANSFER_FAILED, rayacash.PspTransfer),
+    ("psp.document_request.created", psp.DOCUMENT_REQUEST_OPEN, rayacash.PspDocumentRequest),
+    ("psp.document_request.closed", psp.DOCUMENT_REQUEST_CLOSED, rayacash.PspDocumentRequest),
+]
+
+
+@pytest.mark.parametrize(
+    ("event_type", "obj", "cls"), PSP_EVENTS, ids=[name for name, _, _ in PSP_EVENTS]
+)
+def test_construct_event_with_a_psp_object(
+    event_type: str, obj: dict[str, Any], cls: type[rayacash.RayaObject]
+) -> None:
+    data = {**psp.EVENT_CUSTOMER_ACTIVATED, "type": event_type, "data": {"object": obj}}
+    body = json.dumps(data).encode()
+    header = rayacash.WebhookSignature.generate_header(body, WEBHOOK_SECRET)
+    event = rayacash.Webhook.construct_event(body, header, WEBHOOK_SECRET)
+    assert type(event) is rayacash.Event
+    assert event.type == event_type
+    assert type(event.data.object) is cls
+    assert event.data.object["object"] == event_type.rsplit(".", 1)[0]
+    assert event.to_dict() == data
+
+
+def test_a_blocked_customer_keeps_receiving() -> None:
+    # Un cliente bloqueado sigue recibiendo: llega como psp.transfer.received.
+    body = json.dumps(psp.EVENT_TRANSFER_RECEIVED).encode()
+    header = rayacash.WebhookSignature.generate_header(body, WEBHOOK_SECRET)
+    event = rayacash.Webhook.construct_event(body, header, WEBHOOK_SECRET)
+    transfer = event.data.object
+    assert isinstance(transfer, rayacash.PspTransfer)
+    assert (transfer.direction, transfer.status) == ("inbound", "completed")
+    assert type(transfer.counterparty) is rayacash.PspTransfer.Counterparty
+
+
+def test_event_type_lists_the_psp_events() -> None:
+    names = get_args(rayacash.EventType)
+    assert [name for name in names if name.startswith("psp.")] == [
+        name for name, _, _ in PSP_EVENTS
+    ]
+    assert len(PSP_EVENTS) == 12
+    # Después de los identity.*, antes de webhook.test y de los checkout.* legacy.
+    assert names.index("psp.document_request.closed") + 1 == names.index("webhook.test")
+    assert names[-4:] == (
+        "checkout.created",
+        "checkout.succeeded",
+        "checkout.failed",
+        "checkout.refunded",
+    )

@@ -11,13 +11,17 @@ from rayacash._identity_verification_files import IdentityVerificationFiles
 from rayacash._list_object import ListObject
 from rayacash._oauth import OAuthToken
 from rayacash._payment import Payment
+from rayacash._psp_balance import PspBalance, PspCustomerBalance
+from rayacash._psp_customer import PspCustomer
+from rayacash._psp_document_request import PspDocumentRequest
+from rayacash._psp_transfer import PspTransfer
 from rayacash._raya_object import RayaObject
 from rayacash._transfer import Transfer
 from rayacash._user import User
 
 # Las claves son el valor entero de ``object``, con el punto incluido: "connect.order",
-# "connect.payout", "identity.verification" e "identity.verification_files" son una sola clave
-# cada una (nada parte el nombre en "connect" o "identity" y el resto).
+# "connect.payout", "identity.verification", "identity.verification_files" y los cinco "psp.*" son
+# una sola clave cada una (nada parte el nombre en "connect", "identity" o "psp" y el resto).
 # "checkout" es el nombre de "connect.order" en la 1.1.0:
 # los eventos de antes del cambio quedan guardados con ese body y se pueden reenviar.
 OBJECT_CLASSES: dict[str, type[RayaObject]] = {
@@ -31,6 +35,11 @@ OBJECT_CLASSES: dict[str, type[RayaObject]] = {
     "list": ListObject,
     "oauth_token": OAuthToken,
     "payment": Payment,
+    "psp.balance": PspBalance,
+    "psp.customer": PspCustomer,
+    "psp.customer_balance": PspCustomerBalance,
+    "psp.document_request": PspDocumentRequest,
+    "psp.transfer": PspTransfer,
     "transfer": Transfer,
     "user": User,
 }

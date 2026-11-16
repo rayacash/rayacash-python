@@ -5,12 +5,14 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
+from typing import Any
 
 import httpx
 import pytest
 
 import rayacash
 from rayacash._requestor import HTTPClientManager
+from tests import fixtures_psp as psp
 from tests.fixtures import (
     BALANCE,
     EVENT_PAYMENT_SUCCEEDED,
@@ -525,4 +527,218 @@ def test_sandbox_simulate_transfer_without_any_key(api: MockAPI, call: Caller) -
     with pytest.raises(rayacash.AuthenticationError) as info:
         call(rayacash.Payment, "simulate_transfer", SANDBOX_PAYMENT_ID)
     assert info.value.code == "API_KEY_MISSING"
+    assert api.requests == []
+
+
+# --- Raya PSP: rayacash.PspCustomer, PspTransfer y PspBalance, con la clave secreta ------------
+
+PSP_CUSTOMER_PATH = f"/v1/psp/customers/{psp.CUSTOMER_ID}"
+PSP_CUSTOMER_ACTIONS = ["block", "unblock", "close", "recreate"]
+
+
+def test_psp_endpoints(global_api: MockAPI, call: Caller) -> None:
+    api = global_api
+    api.add(201, psp.CUSTOMER_ACTIVE)
+    customer = call(
+        rayacash.PspCustomer,
+        "create",
+        metadata={"plan": "pro"},
+        identity_verification=VERIFICATION_ID,
+        idempotency_key="alta-1",
+    )
+    assert type(customer) is rayacash.PspCustomer
+    assert api.last.url.path == "/v1/psp/customers"
+    assert json.loads(api.last.content) == {
+        "identity_verification": VERIFICATION_ID,
+        "metadata": {"plan": "pro"},
+    }
+    assert api.last.headers["authorization"] == f"Bearer {TEST_KEY}"
+    assert api.last.headers["idempotency-key"] == "alta-1"
+
+    api.add(200, psp.CUSTOMER_WITH_BALANCE)
+    assert call(rayacash.PspCustomer, "retrieve", psp.CUSTOMER_ID).balance == 23649.5
+    assert api.last.url.path == PSP_CUSTOMER_PATH
+
+    api.add(200, psp.CUSTOMER_LIST)
+    page = call(rayacash.PspCustomer, "list", status="active", limit=2)
+    assert type(page) is rayacash.ListObject
+    assert type(page.data[0]) is rayacash.PspCustomer
+    assert dict(api.last.url.params) == {"status": "active", "limit": "2"}
+
+    api.add(200, psp.CUSTOMER_BALANCE)
+    balance = call(rayacash.PspCustomer, "retrieve_balance", psp.CUSTOMER_ID)
+    assert type(balance) is rayacash.PspCustomerBalance
+    assert api.last.url.path == f"{PSP_CUSTOMER_PATH}/balance"
+
+    for action in PSP_CUSTOMER_ACTIONS:
+        api.add(200, psp.CUSTOMER_ACTIVE)
+        result = call(rayacash.PspCustomer, action, psp.CUSTOMER_ID, idempotency_key=f"{action}-1")
+        assert type(result) is rayacash.PspCustomer
+        assert api.last.url.path == f"{PSP_CUSTOMER_PATH}/{action}"
+        assert api.last.content == b""
+        assert api.last.headers["idempotency-key"] == f"{action}-1"
+
+    api.add(201, psp.TRANSFER_OUTBOUND_PENDING)
+    transfer = call(
+        rayacash.PspTransfer,
+        "create",
+        customer=psp.CUSTOMER_ID,
+        amount=18350.5,
+        destination=psp.SUPPLIER_ACCOUNT,
+        idempotency_key="t-1",
+    )
+    assert type(transfer) is rayacash.PspTransfer
+    assert api.last.url.path == "/v1/psp/transfers"
+    assert api.last.headers["idempotency-key"] == "t-1"
+
+    api.add(200, psp.TRANSFER_INBOUND)
+    assert call(rayacash.PspTransfer, "retrieve", psp.INBOUND_ID).direction == "inbound"
+    assert api.last.url.path == f"/v1/psp/transfers/{psp.INBOUND_ID}"
+
+    api.add(200, psp.TRANSFER_LIST)
+    transfers = call(rayacash.PspTransfer, "list", customer=psp.CUSTOMER_ID, limit=2)
+    assert [type(item) for item in transfers] == [rayacash.PspTransfer] * 2
+    assert dict(api.last.url.params) == {"customer": psp.CUSTOMER_ID, "limit": "2"}
+
+    api.add(200, psp.PSP_BALANCE)
+    assert type(call(rayacash.PspBalance, "retrieve")) is rayacash.PspBalance
+    assert api.last.url.path == "/v1/psp/balance"
+
+
+def test_psp_customer_create_in_the_global_style_takes_the_three_forms(
+    global_api: MockAPI, call: Caller
+) -> None:
+    # PspCustomer.create reenvía todo, también los None, al mismo body que client.psp.customers:
+    # con Identidad, con las fotos o una persona jurídica, en el orden de la API.
+    company = {
+        "tax_id": psp.COMPANY_TAX_ID,
+        "name": psp.COMPANY_NAME,
+        "person_type": "J",
+        "external_reference": "cliente-8813",
+    }
+    for body in (psp.CREATE_BODY, psp.PHOTOS_BODY, company):
+        global_api.add(202, psp.CUSTOMER_VERIFYING)
+        call(rayacash.PspCustomer, "create", **dict(reversed(body.items())))
+        assert global_api.last.url.path == "/v1/psp/customers"
+        assert list(json.loads(global_api.last.content).items()) == list(body.items())
+    # Sin identity_verification, tax_id y name son obligatorios: el mismo TypeError, sin mandar.
+    with pytest.raises(TypeError, match=r"^tax_id tiene que ser un str: .* mandá solo identity_"):
+        call(rayacash.PspCustomer, "create", person_type="J")
+    with pytest.raises(TypeError, match=r"^identity_verification .*\(idv_…\), no int\.$"):
+        call(rayacash.PspCustomer, "create", identity_verification=1234)
+    assert len(global_api.requests) == 3
+
+
+def test_psp_transfer_create_requires_an_idempotency_key_in_the_global_style(
+    global_api: MockAPI,
+) -> None:
+    transfer: Any = rayacash.PspTransfer  # llamadas que el type checker ya rechaza
+    with pytest.raises(TypeError, match="idempotency_key"):
+        transfer.create(customer=psp.CUSTOMER_ID, amount=1, destination="x")
+    with pytest.raises(TypeError, match=r"^psp\.transfers\.create necesita idempotency_key"):
+        transfer.create(customer=psp.CUSTOMER_ID, amount=1, destination="x", idempotency_key=None)
+    assert global_api.requests == []
+
+
+def test_psp_customer_actions_by_id_without_a_key(global_api: MockAPI, call: Caller) -> None:
+    for action in PSP_CUSTOMER_ACTIONS:
+        global_api.add(200, psp.CUSTOMER_ACTIVE)
+        call(rayacash.PspCustomer, action, psp.CUSTOMER_ID)
+        assert global_api.last.content == b""
+        assert uuid.UUID(global_api.last.headers["idempotency-key"]).version == 4
+
+
+@pytest.mark.parametrize("action", PSP_CUSTOMER_ACTIONS)
+def test_psp_customer_instance_actions(global_api: MockAPI, call: Caller, action: str) -> None:
+    global_api.add(200, psp.CUSTOMER_ACTIVE)
+    customer = rayacash.PspCustomer.retrieve(psp.CUSTOMER_ID)
+    global_api.add(200, psp.CUSTOMER_BLOCKED)
+    result = call(customer, action)
+    assert type(result) is rayacash.PspCustomer
+    assert result.status == "blocked"
+    assert customer.status == "active"  # devuelve un cliente nuevo, no muta el original
+    assert global_api.last.method == "POST"
+    assert global_api.last.url.path == f"{PSP_CUSTOMER_PATH}/{action}"
+    assert global_api.last.content == b""
+    assert global_api.last.headers["authorization"] == f"Bearer {TEST_KEY}"
+    assert uuid.UUID(global_api.last.headers["idempotency-key"]).version == 4
+
+
+def test_psp_customer_instance_actions_use_the_client_it_came_from(
+    global_api: MockAPI, call: Caller
+) -> None:
+    other_api = MockAPI()
+    client = other_api.client(OTHER_KEY)
+    other_api.add(200, psp.CUSTOMER_ACTIVE)
+    customer = client.psp.customers.retrieve(psp.CUSTOMER_ID)
+    other_api.add(200, psp.CUSTOMER_BLOCKED)
+    call(customer, "block", idempotency_key="b-1")
+    assert other_api.last.headers["authorization"] == f"Bearer {OTHER_KEY}"
+    assert other_api.last.headers["idempotency-key"] == "b-1"
+    # También los de una página: cada cliente recuerda el RayaClient del que vino.
+    other_api.add(200, psp.CUSTOMER_LIST)
+    page = client.psp.customers.list()
+    other_api.add(200, psp.CUSTOMER_ACTIVE)
+    call(page.data[0], "recreate")
+    assert other_api.last.url.path == f"/v1/psp/customers/{psp.COMPANY_ID}/recreate"
+    assert other_api.last.headers["authorization"] == f"Bearer {OTHER_KEY}"
+    assert global_api.requests == []
+
+
+def test_psp_events_from_construct_event_use_the_global_style(global_api: MockAPI) -> None:
+    # Un psp.customer.activated firmado, de punta a punta.
+    body = json.dumps(psp.EVENT_CUSTOMER_ACTIVATED)
+    header = rayacash.WebhookSignature.generate_header(body, WEBHOOK_SECRET)
+    event = rayacash.Webhook.construct_event(body, header, WEBHOOK_SECRET)
+    assert event.type == "psp.customer.activated"
+    customer = event.data.object
+    assert isinstance(customer, rayacash.PspCustomer)
+    assert customer.cvu is not None
+    assert customer.cvu.alias == "maria_ejemplo"
+    global_api.add(200, psp.CUSTOMER_BLOCKED)
+    asyncio.run(customer.block_async(idempotency_key="b-2"))
+    assert global_api.last.url.path == f"{PSP_CUSTOMER_PATH}/block"
+    assert global_api.last.headers["idempotency-key"] == "b-2"
+
+
+def test_psp_events_from_client_construct_event_use_that_client(global_api: MockAPI) -> None:
+    other_api = MockAPI()
+    client = other_api.client(OTHER_KEY)
+    body = json.dumps(psp.EVENT_CUSTOMER_ACTIVATED)
+    header = rayacash.WebhookSignature.generate_header(body, WEBHOOK_SECRET)
+    customer = client.construct_event(body, header, WEBHOOK_SECRET).data.object
+    assert isinstance(customer, rayacash.PspCustomer)
+    other_api.add(200, psp.CUSTOMER_CLOSED)
+    assert customer.close().status == "closed"
+    assert other_api.last.headers["authorization"] == f"Bearer {OTHER_KEY}"
+    assert global_api.requests == []
+
+
+@pytest.mark.parametrize(
+    ("action", "verb"),
+    [
+        ("block", "bloquear"),
+        ("unblock", "desbloquear"),
+        ("close", "dar de baja su CVU"),
+        ("recreate", "recrear su CVU"),
+    ],
+)
+def test_psp_customer_actions_need_an_id(call: Caller, action: str, verb: str) -> None:
+    customer = rayacash.PspCustomer.construct_from({"object": "psp.customer"})
+    with pytest.raises(ValueError, match=rf"^Este PspCustomer no tiene id: no se puede {verb}\.$"):
+        call(customer, action)
+
+
+def test_psp_without_any_key(api: MockAPI, call: Caller) -> None:
+    rayacash.http_client = api.sync_client()
+    rayacash.async_http_client = api.async_client()
+    for owner, method, args in (
+        (rayacash.PspCustomer, "retrieve", (psp.CUSTOMER_ID,)),
+        (rayacash.PspCustomer, "block", (psp.CUSTOMER_ID,)),
+        (rayacash.PspTransfer, "retrieve", (psp.OUTBOUND_ID,)),
+        (rayacash.PspBalance, "retrieve", ()),
+    ):
+        with pytest.raises(rayacash.AuthenticationError) as info:
+            call(owner, method, *args)
+        assert info.value.code == "API_KEY_MISSING"
     assert api.requests == []

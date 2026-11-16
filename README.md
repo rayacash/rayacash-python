@@ -1,6 +1,6 @@
 # rayacash
 
-El SDK oficial de Python para la [API de Raya Cash](https://raya.cash/api). Te deja cobrar por transferencia con un CVU exclusivo por pago, mandar plata a cualquier CBU, CVU o alias, consultar tu saldo, conciliar tus depósitos y verificar los webhooks, con reintentos seguros e idempotencia incluidos. Y si construís una plataforma, cobrar a nombre de otras cuentas de Raya con tu comisión y enviarles dinero a tus vendedores ([Raya Connect](#raya-connect)). También, verificar la identidad de tus clientes con su DNI y una prueba de vida ([Identidad](#identidad)).
+El SDK oficial de Python para la [API de Raya Cash](https://raya.cash/api). Te deja cobrar por transferencia con un CVU exclusivo por pago, mandar plata a cualquier CBU, CVU o alias, consultar tu saldo, conciliar tus depósitos y verificar los webhooks, con reintentos seguros e idempotencia incluidos. Y si construís una plataforma, cobrar a nombre de otras cuentas de Raya con tu comisión y enviarles dinero a tus vendedores ([Raya Connect](#raya-connect)). También, verificar la identidad de tus clientes con su DNI y una prueba de vida ([Identidad](#identidad)) y darles cuentas con CVU a su nombre ([Raya PSP](#raya-psp)).
 
 ```python
 import rayacash
@@ -11,7 +11,7 @@ payment = client.payments.create(amount=15000, description="Pedido #1042")
 print(payment.bank_transfer.cvu, payment.checkout_url)
 ```
 
-Versión 1.2.0. Requiere Python 3.9 o más nuevo. Los cambios de cada versión están en [CHANGELOG.md](CHANGELOG.md).
+Versión 1.3.0. Requiere Python 3.9 o más nuevo. Los cambios de cada versión están en [CHANGELOG.md](CHANGELOG.md).
 
 ## Contenido
 
@@ -26,6 +26,7 @@ Versión 1.2.0. Requiere Python 3.9 o más nuevo. Los cambios de cada versión e
 - [Paginación](#paginación)
 - [Raya Connect](#raya-connect)
 - [Identidad](#identidad)
+- [Raya PSP](#raya-psp)
 - [Errores](#errores)
 - [Webhooks](#webhooks)
 - [Sandbox](#sandbox)
@@ -44,7 +45,8 @@ Versión 1.2.0. Requiere Python 3.9 o más nuevo. Los cambios de cada versión e
 5. **Para cobrar a nombre de otras cuentas:** una app en [Developers › Integraciones › Apps](https://raya.cash/dashboard/developers/apps), con su `client_id` y su `client_secret` (`raya_cs_live_…`). Ver [Raya Connect](#raya-connect).
 6. **Para enviar payouts a tus vendedores:** el descriptor del comercio configurado en [Configuración › Negocio](https://raya.cash/dashboard/settings/business). Sin eso, crear un payout da `PAYOUT_ORIGIN_UNAVAILABLE`.
 7. **Para verificar identidades:** Identidad activada en tu cuenta (la pedís desde [Identidad](https://raya.cash/dashboard/identity), en el dashboard: nos contás para qué la vas a usar y revisamos tu solicitud; hasta que la aprobemos, crear una verificación da `IDENTITY_NOT_ACTIVATED`) y, para los resultados, un destino de webhooks con los eventos de «Identidad». Ver [Identidad](#identidad).
-8. **Para probar sin mover plata:** un sandbox, si en el menú de tu perfil del dashboard aparece «Crear sandbox» o «Sandboxes». Ver [Sandbox](#sandbox).
+8. **Para darles cuentas con CVU a tus clientes:** una cuenta de empresa con Raya PSP activado (lo pedís desde [Raya PSP](https://raya.cash/dashboard/psp/customers), en el dashboard; hasta que lo aprobemos, crear clientes da `PSP_NOT_ACTIVATED`). Ver [Raya PSP](#raya-psp).
+9. **Para probar sin mover plata:** un sandbox, si en el menú de tu perfil del dashboard aparece «Crear sandbox» o «Sandboxes». Ver [Sandbox](#sandbox).
 
 ## Instalación
 
@@ -135,7 +137,7 @@ transfer = rayacash.Transfer.create(
 page = rayacash.Transfer.list(direction="inbound")
 ```
 
-Para las apps, también `rayacash.OAuth.token(...)`, `rayacash.User.retrieve(...)` y `rayacash.ConnectOrder.create/retrieve/refund(...)`, con `rayacash.api_key` igual al `access_token` de la cuenta conectada. `rayacash.ConnectPayout.create/retrieve/list(...)` va con tu clave secreta, igual que `rayacash.IdentityVerification.create/retrieve/list/cancel/files(...)` (Identidad).
+Para las apps, también `rayacash.OAuth.token(...)`, `rayacash.User.retrieve(...)` y `rayacash.ConnectOrder.create/retrieve/refund(...)`, con `rayacash.api_key` igual al `access_token` de la cuenta conectada. `rayacash.ConnectPayout.create/retrieve/list(...)` va con tu clave secreta, igual que `rayacash.IdentityVerification.create/retrieve/list/cancel/files(...)` (Identidad) y `rayacash.PspCustomer`, `rayacash.PspTransfer` y `rayacash.PspBalance` ([Raya PSP](#raya-psp)).
 
 Los dos estilos usan el mismo núcleo y se comportan igual. Preferí `RayaClient` si tu proceso usa más de una clave (por ejemplo, un `access_token` por cuenta conectada) o si querés configurar cada cliente por separado. `payment.refund()` usa el cliente del que vino el pago: si lo trajiste con un `RayaClient`, usa ese cliente; si no, la configuración global.
 
@@ -175,8 +177,8 @@ total = sum(Decimal(str(t.net_amount)) for t in page)  # exacto: Decimal("48169.
 
 Con una `Idempotency-Key` podés reintentar un POST sin miedo a que se haga dos veces: si ya lo procesamos, te devolvemos el mismo resultado.
 
-- **`transfers.create` y `connect.payouts.create` exigen `idempotency_key`.** Generá un UUID v4 (`str(uuid.uuid4())`) para cada transferencia o payout, **guardalo con la operación en tu base antes de llamar** y reusalo en cada reintento. Así, si tu proceso se corta después de mandar la request, el reintento no transfiere dos veces.
-- En `payments.create`, `payments.refund`, `identity.verifications.create` e `identity.verifications.cancel` es opcional pero recomendada. Si no la pasás, el SDK genera una que protege solo los reintentos de esa llamada.
+- **`transfers.create`, `connect.payouts.create` y `psp.transfers.create` exigen `idempotency_key`.** Generá un UUID v4 (`str(uuid.uuid4())`) para cada transferencia o payout, **guardalo con la operación en tu base antes de llamar** y reusalo en cada reintento. Así, si tu proceso se corta después de mandar la request, el reintento no transfiere dos veces.
+- En `payments.create`, `payments.refund`, `identity.verifications.create`, `identity.verifications.cancel`, `psp.customers.create` y las acciones de un cliente de Raya PSP (`block`, `unblock`, `close` y `recreate`) es opcional pero recomendada. Si no la pasás, el SDK genera una que protege solo los reintentos de esa llamada.
 - El SDK reintenta siempre con la misma clave. La que usó queda en `obj.last_response.idempotency_key` y en `error.idempotency_key`, para que puedas reintentar más tarde.
 - Guardamos cada clave 24 horas, para toda tu cuenta. Usar la misma clave con otros parámetros da `IdempotencyError` con `code == "IDEMPOTENCY_KEY_REUSED"`.
 - Si una transferencia o un payout terminó `failed`, para intentarlo de nuevo usá una clave **nueva**: con la misma te devolvemos la respuesta original.
@@ -528,6 +530,157 @@ for verification in client.identity.verifications.list(
 - Los topes de tu cuenta (verificaciones abiertas y creadas por día) responden `RateLimitError` con `error.data["limit"]` en `"open"` o `"daily"` y `retry_after` de una hora: el SDK no se queda esperando.
 - **`person` y las imágenes son datos personales** de quien se verifica: usalos solo para lo que esa persona aceptó, guardá lo mínimo y no los loguees (`print(verification)` muestra `person`).
 
+## Raya PSP
+
+Con **Raya PSP** creás cuentas con CVU y alias a nombre de los clientes de tu empresa: cada cliente (`PspCustomer`) recibe transferencias de cualquier banco o billetera y vos transferís en su nombre. Es para cuentas de empresa con Raya PSP activado: lo pedís desde [Raya PSP](https://raya.cash/dashboard/psp/customers), en el dashboard de tu cuenta de empresa (nos contás para qué lo vas a usar y lo revisamos). Hasta que lo aprobemos, crear clientes, cambiar su estado y transferir en su nombre responden `PermissionDeniedError` con `code == "PSP_NOT_ACTIVATED"`; si no lo aprobamos, escribinos a soporte@raya.cash. Va con tu clave secreta y todavía no está disponible en el [sandbox](#sandbox): con una clave de prueba responde 403 `SANDBOX_NOT_SUPPORTED`. `client.psp` existe desde la 1.3.0. La referencia completa de la API está en https://raya.cash/api/psp.
+
+El flujo:
+
+**1. Creá el cliente.** Si se verificó con [Identidad](#identidad), alcanza su verificación, ya `verified`: su CUIL, su nombre y su sexo salen de ahí. Si lo verificaste vos o es una persona jurídica, mirá «Qué mandar para crearlo», más abajo.
+
+```python
+import rayacash
+
+client = rayacash.RayaClient()  # con tu clave secreta, de RAYA_SECRET_KEY
+
+customer = client.psp.customers.create(
+    identity_verification="idv_3kT9vQ2mXw7Lp0aBcD4eF6gH",  # una verificación document verified
+    external_reference="cliente-8812",  # tu id del cliente, sin datos personales
+    metadata={"plan": "pro"},
+    idempotency_key=cliente.psp_idempotency_key,  # un UUID v4 guardado con tu cliente
+)
+print(customer.id, customer.status)  # pspc_…, active
+print(customer.tax_id, customer.name)  # su CUIL y su nombre, de la verificación
+if customer.cvu is not None:
+    print(customer.cvu.account, customer.cvu.alias)  # su CVU y su alias
+```
+
+**2. Si respondimos `202`, esperá el webhook.** `psp.customer.activated` avisa que su CVU ya está activo y puede recibir transferencias (si no pudimos, `psp.customer.failed` o `psp.customer.rejected`). Ver [Webhooks](#webhooks).
+
+```python
+import os
+
+event = rayacash.Webhook.construct_event(payload, sig_header, os.environ["RAYA_WEBHOOK_SECRET"])
+customer = event.data.object  # un PspCustomer, como estaba en ese momento
+if event.type == "psp.customer.activated" and isinstance(customer, rayacash.PspCustomer):
+    activar_cuenta(customer.external_reference, customer.cvu)
+```
+
+**3. Leé su estado y su saldo** con `retrieve`:
+
+```python
+customer = client.psp.customers.retrieve("pspc_7Hq2Lm9Xw4Tz1Bv8Nc3Kd6Rf")
+print(customer.status, customer.balance)  # active 23649.5
+
+balance = client.psp.customers.retrieve_balance(customer.id)
+print(balance.available, balance.transferable)  # su saldo y lo que podés transferir ahora
+```
+
+**4. Transferí en su nombre**, desde su CVU a un CBU, CVU o alias. `idempotency_key` es obligatoria, como en `transfers.create`: guardala con la transferencia antes de llamar y reusala en cada reintento.
+
+```python
+from decimal import Decimal
+
+transfer = client.psp.transfers.create(
+    customer=customer.id,
+    amount=Decimal("18350.50"),  # lo que baja del saldo de tu cliente
+    destination="0000123380736153041182",  # CBU, CVU o alias
+    idempotency_key=pago.idempotency_key,  # un UUID v4 guardado con la transferencia
+)
+print(transfer.id, transfer.status)  # pspt_…, pending
+```
+
+Si el destino es una cuenta de Raya, vuelve `completed`; si no, `pending` hasta que te avisamos con `psp.transfer.sent` o `psp.transfer.failed`.
+
+**5. Lo que recibe te llega como `psp.transfer.received`**, también si está bloqueado:
+
+```python
+transfer = event.data.object
+if event.type == "psp.transfer.received" and isinstance(transfer, rayacash.PspTransfer):
+    acreditar(transfer.customer, transfer.amount)  # su saldo sube por el monto entero
+```
+
+**6. Bloquealo** si hace falta: sigue recibiendo, pero no puede enviar.
+
+```python
+customer = client.psp.customers.block(customer.id)  # o customer.block()
+print(customer.status, customer.blocked_by)  # blocked account
+```
+
+**7. Listá los tuyos**, del más nuevo al más viejo:
+
+```python
+for customer in client.psp.customers.list(
+    status="active",  # verifying, pending, active, blocked, closed, failed o rejected
+    external_reference="cliente-8812",  # coincidencia exacta
+    limit=100,  # de 1 a 100 (por defecto, 20)
+).auto_paging_iter():
+    print(customer.id, customer.balance)
+```
+
+**Tu saldo manda.** Lo que reciben tus clientes se acredita en tu cuenta y suma a tu saldo; cada cliente lleva además el suyo (`balance`), que sube con lo que recibe y baja con lo que transferís en su nombre. Para transferir en nombre de un cliente tienen que alcanzar los dos: primero tu saldo disponible (si no, `UnprocessableEntityError` con `INSUFFICIENT_BALANCE`, aunque tu cliente tenga saldo) y después el de tu cliente (`CUSTOMER_INSUFFICIENT_BALANCE`). El saldo de un cliente nunca queda negativo y no podés usar el de un cliente para transferir en nombre de otro. `client.psp.balance.retrieve()` te da los dos números: tu saldo (`available`) y la suma de los de tus clientes (`customers_balance`). Cada acreditación a un CVU de un cliente y cada transferencia en su nombre tienen una comisión que se descuenta de tu saldo (el `fee` de la `PspTransfer`); el saldo del cliente se mueve por el monto entero (`amount`). Entre dos clientes de tu cuenta no hay comisión. Los movimientos de tus clientes no aparecen en `client.transfers.list()` ni emiten `transfer.*`.
+
+**Qué mandar para crearlo.** Depende de cómo verificaste su identidad. Son tres formas y no se mezclan:
+
+- **Con Identidad:** si tu cliente se verificó con Raya Identity (`client.identity.verifications.create(type="document")`), mandá solo su `id` en `identity_verification` (y, si querés, `external_reference` y `metadata`). Tomamos de la verificación su CUIL (`tax_id`), su nombre y apellido del RENAPER (`name`), su sexo y su nacionalidad, y `person_type` es `"F"`: con ella no mandes `tax_id`, `name`, `person_type` ni fotos (si no, `InvalidRequestError` con `PARAMETER_INVALID` y el campo en `error.param`). Tiene que ser una verificación `document` de tu cuenta en estado `verified`, con un CUIL válido (si no lo tiene, creá el cliente con las fotos), que no sea de la persona titular de tu cuenta y que no hayas usado para otro cliente (si no, `CUSTOMER_ALREADY_EXISTS`). Respondemos `201` con `status` en `"active"` (con su CVU y su alias) o `"failed"`, o `202` con `"pending"` mientras terminamos de crear el CVU (o con `"verifying"`, si lo tenemos que revisar).
+- **Con las fotos:** si lo verificaste vos (con tu propio KYC o con otro proveedor), una persona humana lleva `tax_id`, `name`, `person_type="F"` y las URLs `https://` del frente y del dorso del DNI y de la selfie (`document_front_url`, `document_back_url` y `selfie_url`: JPEG o PNG derechas, de hasta 5 MB). Tu app toma el DNI y la selfie de tu cliente, con tu marca; nosotros las bajamos, leemos el DNI (el sexo sale del frente), lo validamos contra el Registro Nacional de las Personas (RENAPER) y comparamos la cara. Respondemos `202` con `status` en `"verifying"`; si el DNI o el nombre no coinciden con los del registro, queda `"rejected"` (`decline_reason.code` es `document_mismatch` o `name_mismatch`).
+- **Una persona jurídica:** `tax_id` (su CUIT), `name` (su razón social) y `person_type="J"`, sin fotos. Validamos su CUIT y su razón social contra el Registro Nacional de Sociedades (si no figura, `TAX_ID_NOT_REGISTERED`; si la razón social no coincide, `CUSTOMER_DATA_MISMATCH` con `error.data["field"] == "name"`) y queda en revisión (`202` con `"verifying"`).
+
+```python
+customer = client.psp.customers.create(
+    tax_id="27123456781",
+    name="María Laura Ejemplo",
+    person_type="F",
+    document_front_url=fotos.frente,  # URLs https:// que vencen pronto
+    document_back_url=fotos.dorso,
+    selfie_url=fotos.selfie,
+)
+print(customer.status)  # verifying
+```
+
+Con un `202`, lo que sigue te lo avisamos con `psp.customer.activated`, `psp.customer.failed` o `psp.customer.rejected`, con el motivo en `decline_reason.code`. Decidí con `status`; `customer.last_response.http_status` dice si fue `201` o `202`. `create` tiene una firma por forma (`@overload`), así que mypy y pyright marcan una combinación que la API rechaza, como `identity_verification` con `tax_id`. Antes de mandar, el SDK solo mira lo que nunca puede andar: `identity_verification`, si viene, tiene que ser un `str` (su `id`, no la `IdentityVerification`), y sin ella `tax_id` y `name` son `str` obligatorios; si no, `TypeError` sin mandar nada. Lo demás lo responde la API, con el campo en `error.param`.
+
+| Estado | Qué quiere decir |
+|---|---|
+| `verifying` | Validamos su identidad o lo estamos revisando. |
+| `pending` | Estamos creando su CVU o asignando el alias. |
+| `active` | CVU y alias activos: recibe y envía. |
+| `blocked` | Bloqueado (`blocked_by` es `"account"` si lo bloqueaste vos y `"raya"` si fuimos nosotros): **sigue recibiendo**, pero no envía ni se recrea. |
+| `closed` | CVU dado de baja: conserva su saldo y su historial, y se puede recrear. |
+| `failed` | No pudimos crear su CVU (`decline_reason.code` es `bank_rejected` o `psp_disabled`): se puede recrear. |
+| `rejected` | No pudimos validarlo o aprobarlo (`decline_reason.code` dice por qué). Es final y libera el CUIL: para volver a intentar, creá el cliente de nuevo. |
+
+**Cambiar su estado.** `block` (desde `pending`, `active`, `closed` o `failed`; no exige Raya PSP aprobado), `unblock` (levanta tu bloqueo: uno de Raya solo lo levantamos nosotros), `close` (da de baja el CVU de un cliente `active`, también con saldo) y `recreate` (le crea un CVU nuevo desde `closed` o `failed`, con el mismo `id`, su saldo y su historial; puede responder `202` con `"pending"`). Van sin body y repetirlas no cambia nada: un cliente que ya está como pediste vuelve igual. Desde un estado que no lo permite, `ConflictError` con `code == "CUSTOMER_STATUS_CONFLICT"` y el estado en `error.data` (`status` y `blocked_by`).
+
+```python
+try:
+    customer = client.psp.customers.unblock(customer.id)  # o customer.unblock()
+except rayacash.ConflictError as error:
+    if error.code == "CUSTOMER_STATUS_CONFLICT" and error.data:
+        print(f"No se puede: está {error.data['status']} ({error.data['blocked_by']}).")
+```
+
+| Método | Endpoint |
+|---|---|
+| `client.psp.customers.create(*, identity_verification=None, tax_id=None, name=None, person_type=None, document_front_url=None, document_back_url=None, selfie_url=None, external_reference=None, metadata=None, idempotency_key=None, options=None)` | `POST /v1/psp/customers` |
+| `client.psp.customers.retrieve(customer_id, *, options=None)` | `GET /v1/psp/customers/:id` |
+| `client.psp.customers.list(*, status=None, external_reference=None, created_gte=None, created_lt=None, limit=None, cursor=None, options=None)` | `GET /v1/psp/customers` |
+| `client.psp.customers.retrieve_balance(customer_id, *, options=None)` | `GET /v1/psp/customers/:id/balance` |
+| `client.psp.customers.block(customer_id, *, idempotency_key=None, options=None)` | `POST /v1/psp/customers/:id/block` |
+| `client.psp.customers.unblock(customer_id, *, idempotency_key=None, options=None)` | `POST /v1/psp/customers/:id/unblock` |
+| `client.psp.customers.close(customer_id, *, idempotency_key=None, options=None)` | `POST /v1/psp/customers/:id/close` |
+| `client.psp.customers.recreate(customer_id, *, idempotency_key=None, options=None)` | `POST /v1/psp/customers/:id/recreate` |
+| `client.psp.transfers.create(*, customer, amount, destination, idempotency_key, options=None)` | `POST /v1/psp/transfers` |
+| `client.psp.transfers.retrieve(transfer_id, *, options=None)` | `GET /v1/psp/transfers/:id` |
+| `client.psp.transfers.list(*, customer=None, direction=None, status=None, created_gte=None, created_lt=None, limit=None, cursor=None, options=None)` | `GET /v1/psp/transfers` |
+| `client.psp.balance.retrieve(*, options=None)` | `GET /v1/psp/balance` |
+
+- Cada método tiene su `*_async`. En el estilo global, `rayacash.PspCustomer.create/retrieve/list/retrieve_balance/block/unblock/close/recreate(...)`, `rayacash.PspTransfer.create/retrieve/list(...)` y `rayacash.PspBalance.retrieve()`; `customer.block()`, `unblock()`, `close()` y `recreate()` usan el `RayaClient` del que vino el cliente.
+- Sin `idempotency_key`, `create` y las cuatro acciones generan un UUID v4 por llamada, que protege los reintentos de esa llamada; en `psp.transfers.create` es obligatoria.
+- Los errores propios: `PSP_NOT_ACTIVATED` (403, `PermissionDeniedError`), `CUSTOMER_NOT_FOUND` (404, `NotFoundError`; en `transfers.create`, con `error.param == "customer"`), `CUSTOMER_ALREADY_EXISTS` (409, `ConflictError`: ya tenés un cliente con ese CUIL o CUIT, o ya usaste esa verificación de Identidad para otro, y `error.data["customer"]` es su `id`), `CUSTOMER_STATUS_CONFLICT` (409, `ConflictError`) y, con `UnprocessableEntityError` (422), `CUSTOMER_INSUFFICIENT_BALANCE`, `CUSTOMER_DATA_MISMATCH` (solo una persona jurídica: su razón social no es la del Registro Nacional de Sociedades y `error.data["field"]` es `name`) y `TAX_ID_NOT_REGISTERED`. Además, `transferable` no tiene en cuenta el límite mensual del cliente: una transferencia a una cuenta fuera de Raya que lo supera responde `LIMIT_EXCEEDED` (422), sin descontar nada (si subís su límite desde el panel, podés reintentar con la misma `idempotency_key`).
+- A veces nuestro equipo de cumplimiento necesita documentación sobre un cliente: te avisamos con `psp.document_request.created` (con un `PspDocumentRequest` en `event.data.object`) y un email, y la subís desde Raya PSP, en el dashboard. Cuando lo cerramos, te avisamos con `psp.document_request.closed`.
+- **Son datos personales de tus clientes:** el CUIL, el nombre y las fotos del DNI. Mandalos solo con el consentimiento de tu cliente y no los loguees; si mandás fotos, que sus URLs venzan pronto. `PspCustomer` nunca trae las fotos, los demás datos del registro (como su sexo o su nacionalidad) ni el motivo de un bloqueo.
+
 ## Errores
 
 Todos los errores heredan de `rayacash.RayaError`. **Decidí con `error.code`** (estable), nunca con `error.message` (texto en castellano para personas, puede cambiar). Si llega un código que el SDK no conoce, la clase sale del código HTTP.
@@ -535,12 +688,12 @@ Todos los errores heredan de `rayacash.RayaError`. **Decidí con `error.code`** 
 | Clase | HTTP | Códigos | Qué hacer |
 |---|---|---|---|
 | `InvalidRequestError` | 400, 405, 413 y los demás `4xx` | `PARAMETER_MISSING`, `PARAMETER_INVALID`, `PARAMETER_UNKNOWN`, `INVALID_JSON`, `OAUTH_GRANT_INVALID`… | Corregí la request: `error.param` dice qué parámetro falló. `OAUTH_GRANT_INVALID`: el `code` ya se usó, venció o la `redirect_uri` no coincide. |
-| `NotFoundError` (subclase de la anterior) | 404 | `PAYMENT_NOT_FOUND`, `TRANSFER_NOT_FOUND`, `ORDER_NOT_FOUND`, `USER_NOT_FOUND`, `NOT_FOUND`, `PAYOUT_NOT_FOUND`, `VERIFICATION_NOT_FOUND` | No existe, no es de tu cuenta o no es de una cuenta conectada a tu app. |
+| `NotFoundError` (subclase de la anterior) | 404 | `PAYMENT_NOT_FOUND`, `TRANSFER_NOT_FOUND`, `ORDER_NOT_FOUND`, `USER_NOT_FOUND`, `NOT_FOUND`, `PAYOUT_NOT_FOUND`, `VERIFICATION_NOT_FOUND`, `CUSTOMER_NOT_FOUND` | No existe, no es de tu cuenta o no es de una cuenta conectada a tu app. |
 | `AuthenticationError` | 401 | `API_KEY_MISSING`, `API_KEY_INVALID`, `API_KEY_EXPIRED`, `ACCESS_TOKEN_INVALID`, `ACCESS_TOKEN_REVOKED`, `OAUTH_CLIENT_INVALID`… | Revisá la clave secreta o el `access_token`. `ACCESS_TOKEN_REVOKED`: la cuenta desconectó tu app. |
-| `PermissionDeniedError` | 403 | `API_KEY_ACCOUNT_LOCKED`, `API_NOT_ENABLED`, `MERCHANT_NOT_CONFIGURED`, `TRANSFERS_BLOCKED`, `CONNECTED_ACCOUNT_LOCKED`, `CONNECTED_ACCOUNT_NOT_CONFIGURED`, `APP_DISABLED`, `PAYOUT_ORIGIN_UNAVAILABLE`, `SANDBOX_NOT_SUPPORTED`, `SANDBOX_ONLY`, `IDENTITY_NOT_ACTIVATED` | La cuenta (o la cuenta conectada, o tu app) no puede hacer esto todavía. `PAYOUT_ORIGIN_UNAVAILABLE`: configurá el descriptor del comercio. `SANDBOX_NOT_SUPPORTED`: ese endpoint todavía no está disponible en el sandbox (usaste una clave de prueba, por ejemplo en Identidad). `SANDBOX_ONLY`: `client.test_helpers` solo funciona en un sandbox, con su clave de prueba. `IDENTITY_NOT_ACTIVATED`: activá Identidad desde el dashboard antes de crear verificaciones. Si no la aprobamos, escribinos a soporte@raya.cash. |
+| `PermissionDeniedError` | 403 | `API_KEY_ACCOUNT_LOCKED`, `API_NOT_ENABLED`, `MERCHANT_NOT_CONFIGURED`, `TRANSFERS_BLOCKED`, `CONNECTED_ACCOUNT_LOCKED`, `CONNECTED_ACCOUNT_NOT_CONFIGURED`, `APP_DISABLED`, `PAYOUT_ORIGIN_UNAVAILABLE`, `SANDBOX_NOT_SUPPORTED`, `SANDBOX_ONLY`, `IDENTITY_NOT_ACTIVATED`, `PSP_NOT_ACTIVATED` | La cuenta (o la cuenta conectada, o tu app) no puede hacer esto todavía. `PAYOUT_ORIGIN_UNAVAILABLE`: configurá el descriptor del comercio. `SANDBOX_NOT_SUPPORTED`: ese endpoint todavía no está disponible en el sandbox (usaste una clave de prueba, por ejemplo en Identidad). `SANDBOX_ONLY`: `client.test_helpers` solo funciona en un sandbox, con su clave de prueba. `IDENTITY_NOT_ACTIVATED`: activá Identidad desde el dashboard antes de crear verificaciones. `PSP_NOT_ACTIVATED`: activá Raya PSP desde el dashboard antes de crear clientes o transferir en su nombre. Si no lo aprobamos, escribinos a soporte@raya.cash. |
 | `IdempotencyError` | 409 | `IDEMPOTENCY_KEY_REUSED`, `IDEMPOTENCY_KEY_IN_USE` | Una clave por operación; si está en uso, reintentá más tarde con la misma. |
-| `ConflictError` | 409 | `PAYMENT_NOT_REFUNDABLE`, `PAYMENT_NOT_PENDING`, `VERIFICATION_NOT_CANCELABLE` | Mirá `error.data["status"]` (el estado actual) y, en un reembolso, `error.data.get("reason")`. `PAYMENT_NOT_PENDING`: el pago de prueba que querés simular ya no está pendiente. |
-| `UnprocessableEntityError` | 422 | `INSUFFICIENT_BALANCE`, `LIMIT_EXCEEDED`, `DESTINATION_NOT_FOUND`, `DESTINATION_INACTIVE`, `DESTINATION_NOT_SUPPORTED`, `REFUND_FAILED` | No se arregla reintentando: mostráselo a la persona. |
+| `ConflictError` | 409 | `PAYMENT_NOT_REFUNDABLE`, `PAYMENT_NOT_PENDING`, `VERIFICATION_NOT_CANCELABLE`, `CUSTOMER_ALREADY_EXISTS`, `CUSTOMER_STATUS_CONFLICT` | Mirá `error.data["status"]` (el estado actual) y, en un reembolso, `error.data.get("reason")`. `PAYMENT_NOT_PENDING`: el pago de prueba que querés simular ya no está pendiente. `CUSTOMER_ALREADY_EXISTS`: ya tenés ese cliente de Raya PSP, o ya usaste esa verificación de Identidad para otro (`error.data["customer"]`). `CUSTOMER_STATUS_CONFLICT`: su estado no permite la operación (también `error.data["blocked_by"]`). |
+| `UnprocessableEntityError` | 422 | `INSUFFICIENT_BALANCE`, `LIMIT_EXCEEDED`, `DESTINATION_NOT_FOUND`, `DESTINATION_INACTIVE`, `DESTINATION_NOT_SUPPORTED`, `REFUND_FAILED`, `CUSTOMER_INSUFFICIENT_BALANCE`, `CUSTOMER_DATA_MISMATCH`, `TAX_ID_NOT_REGISTERED` | No se arregla reintentando: mostráselo a la persona. `CUSTOMER_DATA_MISMATCH`: la razón social de una persona jurídica no coincide con la del Registro Nacional de Sociedades (`error.data["field"]` es `"name"`). |
 | `RateLimitError` | 429 | `RATE_LIMITED` | Esperá `error.retry_after` segundos. En Identidad, si llegaste a un tope de tu cuenta, `error.data["limit"]` es `"open"` o `"daily"`. |
 | `APIError` | 5xx y 408 | `INTERNAL_ERROR`, `BANK_UNAVAILABLE`, `CVU_UNAVAILABLE`, `API_UNAVAILABLE`, `TEMPORARILY_UNAVAILABLE` | Reintentá más tarde, en los POST con la misma `idempotency_key`. |
 | `APIConnectionError` | — | `NETWORK_ERROR`, `TIMEOUT` | No llegó respuesta: reintentá con la misma `idempotency_key`. |
@@ -568,7 +721,7 @@ Un reembolso que la red todavía no confirmó sale como `APIError` con `code == 
 
 ## Webhooks
 
-Te avisamos en tu servidor apenas pasa algo: `payment.succeeded` cuando llega la transferencia de un pago, `transfer.received` cuando te depositan, `connect.order.succeeded` cuando se acredita un pago de tu app, `identity.verification.verified` cuando verificamos la identidad de una persona, etc. **Antes de procesar un evento, verificá la firma**:
+Te avisamos en tu servidor apenas pasa algo: `payment.succeeded` cuando llega la transferencia de un pago, `transfer.received` cuando te depositan, `connect.order.succeeded` cuando se acredita un pago de tu app, `identity.verification.verified` cuando verificamos la identidad de una persona, `psp.transfer.received` cuando un cliente de Raya PSP recibe una transferencia, etc. **Antes de procesar un evento, verificá la firma**:
 
 ```python
 import os
@@ -612,11 +765,15 @@ def raya_webhook():
 | `payment.created`, `payment.succeeded`, `payment.failed`, `payment.refunded` | `Payment` |
 | `connect.order.created`, `connect.order.succeeded`, `connect.order.failed`, `connect.order.refunded` | `ConnectOrder` (le llegan al dueño de la app) |
 | `identity.verification.verified`, `identity.verification.declined`, `identity.verification.expired`, `identity.verification.canceled` | `IdentityVerification`, siempre con `person` en `None` (pedila con `client.identity.verifications.retrieve`) |
+| `psp.customer.activated`, `psp.customer.updated`, `psp.customer.failed`, `psp.customer.rejected`, `psp.customer.blocked`, `psp.customer.unblocked`, `psp.customer.closed` | `PspCustomer` |
+| `psp.transfer.received`, `psp.transfer.sent`, `psp.transfer.failed` | `PspTransfer` (un cliente bloqueado sigue recibiendo: llega como `psp.transfer.received`) |
+| `psp.document_request.created`, `psp.document_request.closed` | `PspDocumentRequest` |
 
+- Los `psp.*` los elegís en Developers › Webhooks, en el grupo «Raya PSP», que aparece cuando tu cuenta tiene Raya PSP aprobado. Puede llegar un `psp.transfer.received` antes que el `psp.customer.activated` de ese cliente.
 - «Enviar evento de prueba» (en Developers › Webhooks) manda un `webhook.test`: respondé `2xx` e ignoralo.
 - `event.livemode` es `True` en los eventos de tu cuenta real y `False` en los de un [sandbox](#sandbox). Un evento creado antes de que la API sumara este campo (un reintento o un reenvío desde el dashboard) no lo trae, y de antemano no sabés cuál es así: leelo siempre con `event.get("livemode", True)`, porque `event.livemode` levanta `AttributeError` si falta.
 - La firma tolera 5 minutos de diferencia con tu reloj (`tolerance=300`). Mientras rotás el secreto llegan dos firmas: alcanza con que coincida una.
-- Con `client.construct_event(...)` el evento queda ligado a ese cliente: `event.data.object.refund()` (o `.cancel()`, en una verificación) usa su clave. Para un `ConnectOrder`, el cliente tiene que llevar el `access_token` de la cuenta conectada.
+- Con `client.construct_event(...)` el evento queda ligado a ese cliente: `event.data.object.refund()` (o `.cancel()`, en una verificación, o `.block()`, en un `PspCustomer`) usa su clave. Para un `ConnectOrder`, el cliente tiene que llevar el `access_token` de la cuenta conectada.
 
 ## Sandbox
 
@@ -669,7 +826,7 @@ print(simulated.status)  # succeeded: 44500 al saldo de prueba del usuario y 500
 | `client.test_helpers.payments.simulate_transfer(payment_id, *, amount=None, options=None)` | `POST /v1/test/payments/:id/simulate_transfer` |
 
 - Tiene su `*_async`. En el estilo global, `rayacash.Payment.simulate_transfer(...)`, con `rayacash.api_key` igual a la clave secreta de prueba. `client.test_helpers` existe desde la 1.2.0.
-- **Todavía no está disponible en el sandbox:** las transferencias (`client.transfers`), los payouts (`client.connect.payouts`) e Identidad (`client.identity`) responden `PermissionDeniedError` con `code == "SANDBOX_NOT_SUPPORTED"`. Tampoco Raya.js con la clave pública de prueba, los links de pago ni la configuración del negocio.
+- **Todavía no está disponible en el sandbox:** las transferencias (`client.transfers`), los payouts (`client.connect.payouts`), Identidad (`client.identity`) y Raya PSP (`client.psp`) responden `PermissionDeniedError` con `code == "SANDBOX_NOT_SUPPORTED"`. Tampoco Raya.js con la clave pública de prueba, los links de pago ni la configuración del negocio.
 - **Al pasar a producción:** usá tu clave real (`raya_sk_live_…`) con tu negocio configurado (ver [Antes de empezar](#antes-de-empezar)) y sacá las llamadas a `client.test_helpers`, que con una clave real responden `SANDBOX_ONLY`. Los destinos de webhooks y las apps del sandbox no pasan a tu cuenta real: creá los tuyos ahí (en `RAYA_WEBHOOK_SECRET`, el secreto del destino de tu cuenta real). En tu cuenta real, lo cobrado se suma al saldo cuando se liquida, un pago de menos se devuelve solo y un reembolso puede dar `INSUFFICIENT_BALANCE`.
 
 ## Tests de tu integración
@@ -715,7 +872,7 @@ client = rayacash.RayaClient(
 ```
 
 - **Proxies y certificados:** pasá tus propios `httpx.Client` / `httpx.AsyncClient`. httpx también respeta `HTTPS_PROXY`.
-- **`app_info`:** identifica tu plugin en el `User-Agent` (`rayacash-python/1.2.0 … mi-plugin/1.2.0`), que ves en [Developers › Logs](https://raya.cash/dashboard/developers/logs). En el estilo global: `rayacash.set_app_info("mi-plugin", version="1.2.0")`.
+- **`app_info`:** identifica tu plugin en el `User-Agent` (`rayacash-python/1.3.0 … mi-plugin/1.2.0`), que ves en [Developers › Logs](https://raya.cash/dashboard/developers/logs). En el estilo global: `rayacash.set_app_info("mi-plugin", version="1.2.0")`.
 - **Logging:** el SDK usa el logger `rayacash`. Con `RAYA_LOG=info` (o `rayacash.log = "info"`) ves cada request, su status, su `request_id` y los reintentos en stderr; con `debug`, también la query y la idempotency key. Vale para todo el proceso, también para cada `RayaClient`. Nunca logueamos la clave ni los bodies.
 - **Cerrar:** `client.close()` / `await client.aclose()`, o usá `with` / `async with`.
 - **Endpoints nuevos:** si la API suma un endpoint antes que el SDK, usá `client.raw_request("get", "/v1/…", params=…, body=…)`: tiene la misma autenticación, reintentos y errores. La query va en `params`, nunca en la ruta.
@@ -726,6 +883,7 @@ client = rayacash.RayaClient(
 - **La clave secreta va solo en tu servidor**, leída de una variable de entorno. Nunca en el navegador, en una app mobile ni en el repositorio. Lo mismo vale para el `client_secret` de tu app y para los `access_token` de las cuentas conectadas. Para cobrar desde el navegador está [Raya.js](https://raya.cash/raya-js), con la clave pública.
 - El SDK rechaza la clave pública (`raya_pk_…`) sin mandar nada, nunca muestra completa la clave ni un `access_token` (`repr(client)` y `str(token)` los enmascaran) y nunca sigue redirects.
 - **`person` y las imágenes de Identidad son datos personales.** No los loguees (`print(verification)` muestra `person`), guardá solo lo que necesitás y bajá las imágenes desde tu servidor. Los eventos nunca traen `person`, e Identity.js, en el navegador, no usa ninguna clave: solo el `id` de la verificación.
+- **El CUIL, el nombre y las fotos del DNI de tus clientes de Raya PSP también son datos personales.** Mandalos solo con su consentimiento, no los loguees y, si mandás fotos, que sus URLs venzan pronto.
 - Si la clave se filtró, rotala en Developers › API Keys con vencimiento «Ahora»: la anterior deja de funcionar al instante.
 - Las requests que hacés con la clave secreta quedan 30 días en [Developers › Logs](https://raya.cash/dashboard/developers/logs).
 

@@ -14,6 +14,12 @@ from typing_extensions import Literal, assert_type
 
 import rayacash
 from rayacash._identity_verification_service import IdentityService, IdentityVerificationService
+from rayacash._psp_service import (
+    PspBalanceService,
+    PspCustomerService,
+    PspService,
+    PspTransferService,
+)
 from rayacash._sandbox_helpers_service import SandboxHelpersService, SandboxPaymentHelpersService
 
 
@@ -53,6 +59,9 @@ def client_style(client: rayacash.RayaClient) -> None:
             rayacash.Payment,
             rayacash.ConnectOrder,
             rayacash.IdentityVerification,
+            rayacash.PspCustomer,
+            rayacash.PspTransfer,
+            rayacash.PspDocumentRequest,
             rayacash.RayaObject,
         ],
     )
@@ -327,6 +336,261 @@ async def identity_global_async_style() -> None:
     assert_type(await identity.list_async(), rayacash.ListObject[rayacash.IdentityVerification])
     assert_type(await identity.cancel_async("id"), rayacash.IdentityVerification)
     assert_type(await identity.files_async("id"), rayacash.IdentityVerificationFiles)
+
+
+def psp_style(client: rayacash.RayaClient, event: rayacash.Event) -> None:
+    # Los servicios tienen nombre, aunque (como los demás) no se exportan desde rayacash.
+    assert_type(client.psp, PspService)
+    assert_type(client.psp.customers, PspCustomerService)
+    assert_type(client.psp.transfers, PspTransferService)
+    assert_type(client.psp.balance, PspBalanceService)
+
+    # Las tres formas de create, una por @overload: con Identidad alcanza la verificación.
+    customer = client.psp.customers.create(
+        identity_verification="idv_3kT9vQ2mXw7Lp0aBcD4eF6gH",
+        external_reference="cliente-8812",
+        metadata={"plan": "pro"},
+        idempotency_key="k",
+    )
+    assert_type(customer, rayacash.PspCustomer)
+    assert_type(customer.object, Literal["psp.customer"])
+    assert_type(customer.status, rayacash.PspCustomerStatus)
+    assert_type(customer.person_type, rayacash.PspCustomerPersonType)
+    assert_type(customer.tax_id, str)
+    assert_type(customer.balance, float)
+    assert_type(customer.cvu, Optional[rayacash.PspCustomer.Cvu])
+    if customer.cvu is not None:
+        assert_type(customer.cvu.account, str)
+        assert_type(customer.cvu.alias, Optional[str])
+        assert_type(customer.cvu.status, rayacash.PspCvuStatus)
+        assert_type(customer.cvu.closed_at, Optional[str])
+    assert_type(customer.blocked_by, Optional[rayacash.PspCustomerBlockedBy])
+    assert_type(customer.identity_verification, Optional[str])
+    assert_type(customer.decline_reason, Optional[rayacash.PspCustomer.DeclineReason])
+    if customer.decline_reason is not None:
+        assert_type(customer.decline_reason.code, rayacash.PspCustomerDeclineCode)
+    assert_type(customer.metadata, dict[str, str])
+    assert_type(customer.block(), rayacash.PspCustomer)
+    assert_type(customer.unblock(idempotency_key="u"), rayacash.PspCustomer)
+    assert_type(customer.close(), rayacash.PspCustomer)
+    assert_type(customer.recreate(options={"timeout": 90}), rayacash.PspCustomer)
+
+    with_photos = client.psp.customers.create(
+        tax_id="27123456781",
+        name="María Laura Ejemplo",
+        person_type="F",
+        document_front_url="https://x/frente.jpg",
+        document_back_url="https://x/dorso.jpg",
+        selfie_url="https://x/selfie.jpg",
+        external_reference="cliente-8812",
+    )
+    assert_type(with_photos, rayacash.PspCustomer)
+    company = client.psp.customers.create(
+        tax_id="30712345672",
+        name="Distribuidora Ejemplo S. A.",
+        person_type="J",
+        metadata={"plan": "pro"},
+        idempotency_key="k",
+    )
+    assert_type(company, rayacash.PspCustomer)
+    assert_type(client.psp.customers.retrieve("id"), rayacash.PspCustomer)
+    page = client.psp.customers.list(
+        status="blocked",
+        external_reference="cliente-8812",
+        created_gte=datetime(2026, 10, 1, tzinfo=timezone.utc),
+        created_lt="2026-11-01T00:00:00-03:00",
+        limit=100,
+        cursor="c",
+    )
+    assert_type(page, rayacash.ListObject[rayacash.PspCustomer])
+    for item in page.auto_paging_iter():
+        assert_type(item, rayacash.PspCustomer)
+
+    balance = client.psp.customers.retrieve_balance("id")
+    assert_type(balance, rayacash.PspCustomerBalance)
+    assert_type(balance.object, Literal["psp.customer_balance"])
+    assert_type(balance.customer, str)
+    assert_type(balance.available, float)
+    assert_type(balance.transferable, float)
+    assert_type(client.psp.customers.block("id"), rayacash.PspCustomer)
+    assert_type(client.psp.customers.unblock("id", idempotency_key="u"), rayacash.PspCustomer)
+    assert_type(client.psp.customers.close("id"), rayacash.PspCustomer)
+    assert_type(client.psp.customers.recreate("id"), rayacash.PspCustomer)
+
+    transfer = client.psp.transfers.create(
+        customer="pspc_x",
+        amount=Decimal("18350.50"),
+        destination="alias.ejemplo",
+        idempotency_key="k",
+    )
+    assert_type(transfer, rayacash.PspTransfer)
+    assert_type(transfer.object, Literal["psp.transfer"])
+    assert_type(transfer.direction, rayacash.PspTransferDirection)
+    assert_type(transfer.status, rayacash.PspTransferStatus)
+    assert_type(transfer.fee, float)
+    assert_type(transfer.account, str)
+    assert_type(transfer.counterparty, rayacash.PspTransfer.Counterparty)
+    assert_type(transfer.counterparty.tax_id, Optional[str])
+    assert_type(transfer.reference, Optional[str])
+    assert_type(client.psp.transfers.retrieve("id"), rayacash.PspTransfer)
+    transfers = client.psp.transfers.list(
+        customer="pspc_x", direction="outbound", status="failed", limit=10
+    )
+    assert_type(transfers, rayacash.ListObject[rayacash.PspTransfer])
+    assert_type(transfers.data, list[rayacash.PspTransfer])
+
+    totals = client.psp.balance.retrieve()
+    assert_type(totals, rayacash.PspBalance)
+    assert_type(totals.object, Literal["psp.balance"])
+    assert_type(totals.customers_balance, float)
+
+    if event.type == "psp.document_request.created" and isinstance(
+        event.data.object, rayacash.PspDocumentRequest
+    ):
+        request = event.data.object
+        assert_type(request.status, rayacash.PspDocumentRequestStatus)
+        assert_type(request.submitted_at, Optional[str])
+    if event.type == "psp.customer.activated" and isinstance(
+        event.data.object, rayacash.PspCustomer
+    ):
+        assert_type(event.data.object.block(), rayacash.PspCustomer)
+
+
+async def psp_async_style(client: rayacash.RayaClient, customer: rayacash.PspCustomer) -> None:
+    customers = client.psp.customers
+    assert_type(await customers.create_async(identity_verification="idv_x"), rayacash.PspCustomer)
+    assert_type(
+        await customers.create_async(
+            tax_id="x",
+            name="y",
+            person_type="F",
+            document_front_url="https://x/frente.jpg",
+            document_back_url="https://x/dorso.jpg",
+            selfie_url="https://x/selfie.jpg",
+        ),
+        rayacash.PspCustomer,
+    )
+    assert_type(
+        await customers.create_async(tax_id="x", name="y", person_type="J"), rayacash.PspCustomer
+    )
+    assert_type(await customers.retrieve_async("id"), rayacash.PspCustomer)
+    page = await customers.list_async(status="active")
+    assert_type(page, rayacash.ListObject[rayacash.PspCustomer])
+    async for item in page.auto_paging_iter():
+        assert_type(item, rayacash.PspCustomer)
+    assert_type(await customers.retrieve_balance_async("id"), rayacash.PspCustomerBalance)
+    assert_type(await customers.block_async("id"), rayacash.PspCustomer)
+    assert_type(await customers.unblock_async("id"), rayacash.PspCustomer)
+    assert_type(await customers.close_async("id"), rayacash.PspCustomer)
+    assert_type(await customers.recreate_async("id", idempotency_key="r"), rayacash.PspCustomer)
+    assert_type(await customer.block_async(), rayacash.PspCustomer)
+    assert_type(await customer.unblock_async(), rayacash.PspCustomer)
+    assert_type(await customer.close_async(idempotency_key="c"), rayacash.PspCustomer)
+    assert_type(await customer.recreate_async(), rayacash.PspCustomer)
+    transfers = client.psp.transfers
+    assert_type(
+        await transfers.create_async(customer="c", amount=1, destination="x", idempotency_key="k"),
+        rayacash.PspTransfer,
+    )
+    assert_type(await transfers.retrieve_async("id"), rayacash.PspTransfer)
+    assert_type(
+        await transfers.list_async(direction="inbound"), rayacash.ListObject[rayacash.PspTransfer]
+    )
+    assert_type(await client.psp.balance.retrieve_async(), rayacash.PspBalance)
+
+
+def psp_global_style() -> None:
+    customer = rayacash.PspCustomer.create(tax_id="x", name="y", person_type="J")
+    assert_type(customer, rayacash.PspCustomer)
+    assert_type(
+        rayacash.PspCustomer.create(identity_verification="idv_x", metadata={"plan": "pro"}),
+        rayacash.PspCustomer,
+    )
+    assert_type(
+        rayacash.PspCustomer.create(
+            tax_id="x",
+            name="y",
+            person_type="F",
+            document_front_url="https://x/frente.jpg",
+            document_back_url="https://x/dorso.jpg",
+            selfie_url="https://x/selfie.jpg",
+            idempotency_key="k",
+        ),
+        rayacash.PspCustomer,
+    )
+    assert_type(rayacash.PspCustomer.retrieve("id"), rayacash.PspCustomer)
+    assert_type(
+        rayacash.PspCustomer.list(status="closed"), rayacash.ListObject[rayacash.PspCustomer]
+    )
+    assert_type(rayacash.PspCustomer.retrieve_balance("id"), rayacash.PspCustomerBalance)
+    assert_type(rayacash.PspCustomer.block("id"), rayacash.PspCustomer)
+    assert_type(rayacash.PspCustomer.unblock("id", idempotency_key="u"), rayacash.PspCustomer)
+    assert_type(rayacash.PspCustomer.close("id"), rayacash.PspCustomer)
+    assert_type(rayacash.PspCustomer.recreate("id"), rayacash.PspCustomer)
+    assert_type(customer.block(), rayacash.PspCustomer)
+    assert_type(
+        rayacash.PspTransfer.create(customer="c", amount=1, destination="x", idempotency_key="k"),
+        rayacash.PspTransfer,
+    )
+    assert_type(rayacash.PspTransfer.retrieve("id"), rayacash.PspTransfer)
+    assert_type(rayacash.PspTransfer.list(customer="c"), rayacash.ListObject[rayacash.PspTransfer])
+    assert_type(rayacash.PspBalance.retrieve(), rayacash.PspBalance)
+    assert_type(
+        rayacash.PspCustomer.construct_from({"object": "psp.customer"}), rayacash.PspCustomer
+    )
+
+
+async def psp_global_async_style() -> None:
+    customer = rayacash.PspCustomer
+    assert_type(await customer.create_async(identity_verification="idv_x"), rayacash.PspCustomer)
+    assert_type(
+        await customer.create_async(
+            tax_id="x",
+            name="y",
+            person_type="F",
+            document_front_url="https://x/frente.jpg",
+            document_back_url="https://x/dorso.jpg",
+            selfie_url="https://x/selfie.jpg",
+        ),
+        rayacash.PspCustomer,
+    )
+    assert_type(
+        await customer.create_async(tax_id="x", name="y", person_type="J", external_reference="r"),
+        rayacash.PspCustomer,
+    )
+    assert_type(await customer.retrieve_async("id"), rayacash.PspCustomer)
+    assert_type(await customer.list_async(), rayacash.ListObject[rayacash.PspCustomer])
+    assert_type(await customer.retrieve_balance_async("id"), rayacash.PspCustomerBalance)
+    assert_type(await customer.block_async("id"), rayacash.PspCustomer)
+    assert_type(await customer.unblock_async("id"), rayacash.PspCustomer)
+    assert_type(await customer.close_async("id"), rayacash.PspCustomer)
+    assert_type(await customer.recreate_async("id"), rayacash.PspCustomer)
+    assert_type(
+        await rayacash.PspTransfer.create_async(
+            customer="c", amount=1, destination="x", idempotency_key="k"
+        ),
+        rayacash.PspTransfer,
+    )
+    assert_type(await rayacash.PspTransfer.retrieve_async("id"), rayacash.PspTransfer)
+    assert_type(await rayacash.PspTransfer.list_async(), rayacash.ListObject[rayacash.PspTransfer])
+    assert_type(await rayacash.PspBalance.retrieve_async(), rayacash.PspBalance)
+
+
+async def psp_create_forms_that_do_not_type(client: rayacash.RayaClient) -> None:
+    # Lo que la API rechaza no tipa: identity_verification con datos o fotos, una persona humana
+    # sin las fotos, una jurídica con fotos, gender (ya no existe) o un id que no es un str. mypy
+    # exige que cada ignore haga falta (warn_unused_ignores, de --strict).
+    customers = client.psp.customers
+    customers.create(identity_verification="idv_x", tax_id="27123456781")  # type: ignore[call-overload]
+    customers.create(identity_verification="idv_x", selfie_url="https://x/s.jpg")  # type: ignore[call-overload]
+    customers.create(tax_id="27123456781", name="María", person_type="F")  # type: ignore[call-overload]
+    customers.create(tax_id="x", name="y", person_type="J", selfie_url="https://x")  # type: ignore[call-overload]
+    customers.create(tax_id="x", name="y", person_type="J", gender="F")  # type: ignore[call-overload]
+    customers.create(identity_verification=1234)  # type: ignore[call-overload]
+    customers.create()  # type: ignore[call-overload]
+    await customers.create_async(identity_verification="idv_x", name="y")  # type: ignore[call-overload]
+    rayacash.PspCustomer.create(identity_verification="idv_x", person_type="F")  # type: ignore[call-overload]
+    await rayacash.PspCustomer.create_async(tax_id="x", name="y")  # type: ignore[call-overload]
 
 
 def sandbox_style(client: rayacash.RayaClient, event: rayacash.Event) -> None:

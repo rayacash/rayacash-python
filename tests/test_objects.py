@@ -10,6 +10,7 @@ import pytest
 import rayacash
 from rayacash._object_classes import OBJECT_CLASSES
 from rayacash._raya_object import convert_to_raya_object
+from tests import fixtures_psp as psp
 from tests.fixtures import (
     EVENT_PAYMENT_SUCCEEDED,
     PAYMENT_PENDING,
@@ -482,3 +483,271 @@ def test_event_hydrates_an_identity_verification() -> None:
     assert type(verification.checks) is rayacash.IdentityVerification.Checks
     assert event.livemode is True  # un evento de la cuenta real
     assert event.to_dict() == EVENT_VERIFICATION_VERIFIED
+
+
+# --- Raya PSP: PspCustomer, PspCustomerBalance, PspTransfer, PspBalance y PspDocumentRequest ----
+
+# Las claves de cada objeto, en el orden de la API (las tuplas *_KEYS de
+# pspexternal/serializers.py): sin terms_accepted_at.
+PSP_CUSTOMER_KEYS = [
+    "id",
+    "object",
+    "status",
+    "person_type",
+    "tax_id",
+    "name",
+    "balance",
+    "currency",
+    "cvu",
+    "blocked_by",
+    "identity_verification",
+    "decline_reason",
+    "external_reference",
+    "metadata",
+    "created_at",
+]
+PSP_TRANSFER_KEYS = [
+    "id",
+    "object",
+    "customer",
+    "direction",
+    "status",
+    "amount",
+    "fee",
+    "net_amount",
+    "currency",
+    "account",
+    "counterparty",
+    "description",
+    "reference",
+    "created_at",
+]
+
+
+def fields_of(cls: type[rayacash.RayaObject]) -> list[str]:
+    """Los campos que anota la clase, en orden (sin los ClassVar privados)."""
+    return [name for name in vars(cls).get("__annotations__", {}) if not name.startswith("_")]
+
+
+def test_psp_classes_are_registered_by_their_whole_object_name() -> None:
+    # "psp.customer" lleva un punto: es una sola clave del registro, como "connect.order".
+    classes = {
+        "psp.balance": rayacash.PspBalance,
+        "psp.customer": rayacash.PspCustomer,
+        "psp.customer_balance": rayacash.PspCustomerBalance,
+        "psp.document_request": rayacash.PspDocumentRequest,
+        "psp.transfer": rayacash.PspTransfer,
+    }
+    for object_name, cls in classes.items():
+        assert OBJECT_CLASSES[object_name] is cls
+        assert object_name == cls.OBJECT_NAME
+    assert type(convert_to_raya_object({"object": "psp"})) is rayacash.RayaObject
+    assert type(convert_to_raya_object({"object": "psp.cliente"})) is rayacash.RayaObject
+
+
+def test_psp_classes_annotate_the_fields_of_the_api_in_order() -> None:
+    assert fields_of(rayacash.PspCustomer) == PSP_CUSTOMER_KEYS
+    assert fields_of(rayacash.PspCustomer.Cvu) == [
+        "account",
+        "alias",
+        "holder_name",
+        "status",
+        "created_at",
+        "closed_at",
+    ]
+    assert fields_of(rayacash.PspCustomer.DeclineReason) == ["code", "message"]
+    assert fields_of(rayacash.PspCustomerBalance) == [
+        "object",
+        "customer",
+        "available",
+        "transferable",
+        "currency",
+    ]
+    assert fields_of(rayacash.PspTransfer) == PSP_TRANSFER_KEYS
+    assert fields_of(rayacash.PspTransfer.Counterparty) == ["name", "tax_id", "account", "alias"]
+    assert fields_of(rayacash.PspBalance) == [
+        "object",
+        "available",
+        "customers_balance",
+        "currency",
+    ]
+    assert fields_of(rayacash.PspDocumentRequest) == [
+        "id",
+        "object",
+        "customer",
+        "status",
+        "subject",
+        "message",
+        "created_at",
+        "submitted_at",
+        "closed_at",
+    ]
+    assert list(psp.CUSTOMER_ACTIVE) == PSP_CUSTOMER_KEYS
+    assert list(psp.TRANSFER_INBOUND) == PSP_TRANSFER_KEYS
+
+
+def test_psp_customer_nested_objects() -> None:
+    customer = convert_to_raya_object(psp.CUSTOMER_WITH_BALANCE)
+    assert type(customer) is rayacash.PspCustomer
+    assert customer.object == "psp.customer"
+    assert customer.id == psp.CUSTOMER_ID
+    assert customer.person_type == "F"
+    assert customer.tax_id == psp.TAX_ID
+    cvu = customer.cvu
+    assert type(cvu) is rayacash.PspCustomer.Cvu
+    assert cvu.account == psp.CUSTOMER_ACCOUNT
+    assert cvu.holder_name == "MARIA LAURA EJEMPLO"
+    assert cvu.status == "active"
+    assert cvu.closed_at is None
+    assert customer.blocked_by is None
+    assert customer.decline_reason is None
+    assert type(customer.metadata) is dict  # dict común: las claves son tuyas
+    assert isinstance(customer.balance, float)
+    assert repr(customer).startswith(f"<PspCustomer psp.customer id={psp.CUSTOMER_ID} at 0x")
+
+    rejected = convert_to_raya_object(psp.CUSTOMER_REJECTED)
+    assert type(rejected.decline_reason) is rayacash.PspCustomer.DeclineReason
+    assert rejected.decline_reason.code == "face_mismatch"
+    assert rejected.cvu is None
+
+    blocked = convert_to_raya_object(psp.CUSTOMER_BLOCKED)
+    assert (blocked.status, blocked.blocked_by) == ("blocked", "account")
+
+    company = convert_to_raya_object(psp.COMPANY_VERIFYING)
+    assert (company.person_type, company.status, company.metadata) == ("J", "verifying", {})
+
+
+def test_psp_customer_values_stay_as_raw_json_in_their_order() -> None:
+    customer = convert_to_raya_object(psp.CUSTOMER_ACTIVE)
+    assert list(customer) == PSP_CUSTOMER_KEYS
+    assert len(customer) == 15
+    assert isinstance(customer.balance, int)  # 0, como vino
+    assert customer.to_dict() == psp.CUSTOMER_ACTIVE
+    assert type(customer.to_dict()["cvu"]) is dict
+    assert json.loads(json.dumps(customer)) == psp.CUSTOMER_ACTIVE
+    assert json.loads(str(customer)) == psp.CUSTOMER_ACTIVE
+
+
+def test_psp_customer_metadata_keys_are_yours() -> None:
+    metadata = {"object": "psp.customer", "keys": "x", "block": "y", "cvu": "z"}
+    customer = convert_to_raya_object({**psp.CUSTOMER_ACTIVE, "metadata": metadata})
+    assert type(customer.metadata) is dict
+    assert customer.metadata == metadata
+
+
+def test_psp_customer_actions_are_not_fields() -> None:
+    # block, unblock, close y recreate son métodos: un campo con ese nombre se lee con [].
+    customer = convert_to_raya_object({**psp.CUSTOMER_ACTIVE, "close": "valor"})
+    assert callable(customer.close)
+    assert customer["close"] == "valor"
+    for action in ("block", "unblock", "close", "recreate"):
+        assert callable(getattr(customer, action))
+        assert callable(getattr(customer, f"{action}_async"))
+        assert action not in fields_of(rayacash.PspCustomer)
+
+
+def test_psp_customer_unknown_fields_and_values_pass() -> None:
+    data = {
+        **psp.CUSTOMER_ACTIVE,
+        "status": "en_revision",
+        "nuevo_campo": {"a": 1},
+        "cvu": {**psp.CUSTOMER_ACTIVE["cvu"], "status": "suspended", "bank": "x"},
+        "decline_reason": {"code": "nuevo_motivo", "message": "Otro motivo."},
+    }
+    customer = convert_to_raya_object(data)
+    assert customer.status == "en_revision"
+    assert customer["nuevo_campo"] == {"a": 1}
+    assert type(customer.cvu) is rayacash.PspCustomer.Cvu
+    assert customer.cvu["status"] == "suspended"  # un estado que el SDK todavía no conoce
+    assert customer.decline_reason.code == "nuevo_motivo"
+    assert customer.to_dict() == data
+
+
+def test_psp_customer_pickle_copy_and_deepcopy() -> None:
+    customer = convert_to_raya_object(psp.CUSTOMER_REJECTED)
+    restored = pickle.loads(pickle.dumps(customer))
+    assert type(restored) is rayacash.PspCustomer
+    assert type(restored.decline_reason) is rayacash.PspCustomer.DeclineReason
+    assert restored == customer
+    assert restored._requestor is None
+
+    active = convert_to_raya_object(psp.CUSTOMER_ACTIVE)
+    deep = copy.deepcopy(active)
+    assert type(deep.cvu) is rayacash.PspCustomer.Cvu
+    deep.metadata["plan"] = "otro"
+    assert active.metadata["plan"] == "pro"
+    assert type(copy.copy(active)) is rayacash.PspCustomer
+
+
+def test_psp_customer_balance_and_psp_balance() -> None:
+    balance = convert_to_raya_object(psp.CUSTOMER_BALANCE)
+    assert type(balance) is rayacash.PspCustomerBalance
+    assert (balance.customer, balance.available, balance.transferable) == (
+        psp.CUSTOMER_ID,
+        23649.5,
+        23649.5,
+    )
+    assert "id" not in balance  # sin id, como balance
+    assert repr(balance).startswith("<PspCustomerBalance psp.customer_balance at 0x")
+    totals = convert_to_raya_object(psp.PSP_BALANCE)
+    assert type(totals) is rayacash.PspBalance
+    assert (totals.available, totals.customers_balance) == (640200.5, 512875.25)
+    # Tu saldo puede ser negativo: el número viaja como vino.
+    negative = convert_to_raya_object({**psp.PSP_BALANCE, "available": -1500.75})
+    assert negative.available == -1500.75
+    assert totals.to_dict() == psp.PSP_BALANCE
+
+
+def test_psp_transfer_nested_objects() -> None:
+    transfer = convert_to_raya_object(psp.TRANSFER_INBOUND)
+    assert type(transfer) is rayacash.PspTransfer
+    assert list(transfer) == PSP_TRANSFER_KEYS
+    assert (transfer.amount, transfer.fee, transfer.net_amount) == (42000, 133.9, 41866.1)
+    assert type(transfer.counterparty) is rayacash.PspTransfer.Counterparty
+    assert transfer.counterparty.name == "Juan Ejemplo"
+    assert transfer.counterparty.alias is None
+    assert transfer.account == psp.CUSTOMER_ACCOUNT
+    assert transfer.reference == "H6T2Y9P4W1K7N3X8Q5R0ZB"
+    assert transfer.to_dict() == psp.TRANSFER_INBOUND
+    assert repr(transfer).startswith(f"<PspTransfer psp.transfer id={psp.INBOUND_ID} at 0x")
+    # No es un Transfer: las de tus clientes no aparecen en transfers.list().
+    assert not isinstance(transfer, rayacash.Transfer)
+    restored = pickle.loads(pickle.dumps(transfer))
+    assert type(restored.counterparty) is rayacash.PspTransfer.Counterparty
+
+
+def test_psp_document_request() -> None:
+    request = convert_to_raya_object(psp.DOCUMENT_REQUEST_OPEN)
+    assert type(request) is rayacash.PspDocumentRequest
+    assert request.object == "psp.document_request"
+    assert request.customer == psp.CUSTOMER_ID
+    assert request.status == "open"
+    assert request.submitted_at is None
+    assert request.to_dict() == psp.DOCUMENT_REQUEST_OPEN
+    closed = convert_to_raya_object(psp.DOCUMENT_REQUEST_CLOSED)
+    assert (closed.status, closed.closed_at) == ("closed", "2026-10-26T09:00:00Z")
+
+
+def test_a_page_of_psp_customers_and_transfers() -> None:
+    customers = convert_to_raya_object(psp.CUSTOMER_LIST)
+    assert type(customers) is rayacash.ListObject
+    assert [type(customer) for customer in customers] == [rayacash.PspCustomer] * 2
+    assert json.loads(json.dumps(customers)) == psp.CUSTOMER_LIST
+    transfers = convert_to_raya_object(psp.TRANSFER_LIST)
+    assert [type(transfer) for transfer in transfers] == [rayacash.PspTransfer] * 2
+
+
+@pytest.mark.parametrize(
+    ("event", "cls"),
+    [
+        (psp.EVENT_CUSTOMER_ACTIVATED, rayacash.PspCustomer),
+        (psp.EVENT_TRANSFER_RECEIVED, rayacash.PspTransfer),
+        (psp.EVENT_DOCUMENT_REQUEST_CREATED, rayacash.PspDocumentRequest),
+    ],
+    ids=["customer", "transfer", "document_request"],
+)
+def test_event_hydrates_psp_objects(event: dict[str, Any], cls: type[rayacash.RayaObject]) -> None:
+    hydrated = rayacash.Event.construct_from(event)
+    assert hydrated.type == event["type"]
+    assert type(hydrated.data.object) is cls
+    assert hydrated.to_dict() == event
