@@ -1,6 +1,6 @@
 # rayacash
 
-El SDK oficial de Python para la [API de Raya Cash](https://raya.cash/api). Te deja cobrar por transferencia con un CVU exclusivo por pago, mandar plata a cualquier CBU, CVU o alias, consultar tu saldo, conciliar tus depósitos y verificar los webhooks, con reintentos seguros e idempotencia incluidos. Y si construís una plataforma, cobrar a nombre de otras cuentas de Raya con tu comisión y enviarles dinero a tus vendedores ([Raya Connect](#raya-connect)). También, verificar la identidad de tus clientes con su DNI y una prueba de vida ([Identidad](#identidad)) y darles cuentas con CVU a su nombre ([Raya PSP](#raya-psp)).
+El SDK oficial de Python para la [API de Raya Cash](https://raya.cash/api). Te deja cobrar por transferencia con un CVU exclusivo por pago, mandar plata a cualquier CBU, CVU o alias, consultar tu saldo, conciliar tus depósitos y verificar los webhooks, con reintentos seguros e idempotencia incluidos. Y si construís una plataforma, cobrar a nombre de otras cuentas de Raya con tu comisión y enviarles dinero a tus vendedores ([Raya Connect](#raya-connect)). También, verificar la identidad de tus clientes con su DNI y una prueba de vida ([Identidad](#identidad)), darles cuentas con CVU a su nombre ([Raya PSP](#raya-psp)) y emitirles facturas electrónicas de ARCA ([Facturador](#facturador)).
 
 ```python
 import rayacash
@@ -11,7 +11,7 @@ payment = client.payments.create(amount=15000, description="Pedido #1042")
 print(payment.bank_transfer.cvu, payment.checkout_url)
 ```
 
-Versión 1.3.0. Requiere Python 3.9 o más nuevo. Los cambios de cada versión están en [CHANGELOG.md](CHANGELOG.md).
+Versión 1.4.0. Requiere Python 3.9 o más nuevo. Los cambios de cada versión están en [CHANGELOG.md](CHANGELOG.md).
 
 ## Contenido
 
@@ -27,6 +27,7 @@ Versión 1.3.0. Requiere Python 3.9 o más nuevo. Los cambios de cada versión e
 - [Raya Connect](#raya-connect)
 - [Identidad](#identidad)
 - [Raya PSP](#raya-psp)
+- [Facturador](#facturador)
 - [Errores](#errores)
 - [Webhooks](#webhooks)
 - [Sandbox](#sandbox)
@@ -46,7 +47,8 @@ Versión 1.3.0. Requiere Python 3.9 o más nuevo. Los cambios de cada versión e
 6. **Para enviar payouts a tus vendedores:** el descriptor del comercio configurado en [Configuración › Negocio](https://raya.cash/dashboard/settings/business). Sin eso, crear un payout da `PAYOUT_ORIGIN_UNAVAILABLE`.
 7. **Para verificar identidades:** Identidad activada en tu cuenta (la pedís desde [Identidad](https://raya.cash/dashboard/identity), en el dashboard: nos contás para qué la vas a usar y revisamos tu solicitud; hasta que la aprobemos, crear una verificación da `IDENTITY_NOT_ACTIVATED`) y, para los resultados, un destino de webhooks con los eventos de «Identidad». Ver [Identidad](#identidad).
 8. **Para darles cuentas con CVU a tus clientes:** una cuenta de empresa con Raya PSP activado (lo pedís desde [Raya PSP](https://raya.cash/dashboard/psp/customers), en el dashboard; hasta que lo aprobemos, crear clientes da `PSP_NOT_ACTIVATED`). Ver [Raya PSP](#raya-psp).
-9. **Para probar sin mover plata:** un sandbox, si en el menú de tu perfil del dashboard aparece «Crear sandbox» o «Sandboxes». Ver [Sandbox](#sandbox).
+9. **Para emitir facturas electrónicas de ARCA:** el Facturador configurado en [Negocios › Facturador](https://raya.cash/dashboard/invoicing), con tu punto de venta y tu certificado de ARCA (si no aparece en el dashboard, tu cuenta todavía no lo tiene; hasta que esté listo para emitir, crear una factura da `FACTURADOR_NOT_READY`). Ver [Facturador](#facturador).
+10. **Para probar sin mover plata:** un sandbox, si en el menú de tu perfil del dashboard aparece «Crear sandbox» o «Sandboxes». Ver [Sandbox](#sandbox).
 
 ## Instalación
 
@@ -137,7 +139,7 @@ transfer = rayacash.Transfer.create(
 page = rayacash.Transfer.list(direction="inbound")
 ```
 
-Para las apps, también `rayacash.OAuth.token(...)`, `rayacash.User.retrieve(...)` y `rayacash.ConnectOrder.create/retrieve/refund(...)`, con `rayacash.api_key` igual al `access_token` de la cuenta conectada. `rayacash.ConnectPayout.create/retrieve/list(...)` va con tu clave secreta, igual que `rayacash.IdentityVerification.create/retrieve/list/cancel/files(...)` (Identidad) y `rayacash.PspCustomer`, `rayacash.PspTransfer` y `rayacash.PspBalance` ([Raya PSP](#raya-psp)).
+Para las apps, también `rayacash.OAuth.token(...)`, `rayacash.User.retrieve(...)` y `rayacash.ConnectOrder.create/retrieve/refund(...)`, con `rayacash.api_key` igual al `access_token` de la cuenta conectada. `rayacash.ConnectPayout.create/retrieve/list(...)` va con tu clave secreta, igual que `rayacash.IdentityVerification.create/retrieve/list/cancel/files(...)` (Identidad), `rayacash.PspCustomer`, `rayacash.PspTransfer` y `rayacash.PspBalance` ([Raya PSP](#raya-psp)) y `rayacash.Invoice.create/retrieve/list(...)` ([Facturador](#facturador)).
 
 Los dos estilos usan el mismo núcleo y se comportan igual. Preferí `RayaClient` si tu proceso usa más de una clave (por ejemplo, un `access_token` por cuenta conectada) o si querés configurar cada cliente por separado. `payment.refund()` usa el cliente del que vino el pago: si lo trajiste con un `RayaClient`, usa ese cliente; si no, la configuración global.
 
@@ -177,11 +179,11 @@ total = sum(Decimal(str(t.net_amount)) for t in page)  # exacto: Decimal("48169.
 
 Con una `Idempotency-Key` podés reintentar un POST sin miedo a que se haga dos veces: si ya lo procesamos, te devolvemos el mismo resultado.
 
-- **`transfers.create`, `connect.payouts.create` y `psp.transfers.create` exigen `idempotency_key`.** Generá un UUID v4 (`str(uuid.uuid4())`) para cada transferencia o payout, **guardalo con la operación en tu base antes de llamar** y reusalo en cada reintento. Así, si tu proceso se corta después de mandar la request, el reintento no transfiere dos veces.
+- **`transfers.create`, `connect.payouts.create`, `psp.transfers.create` e `invoices.create` exigen `idempotency_key`.** Generá un UUID v4 (`str(uuid.uuid4())`) para cada transferencia, payout o factura, **guardalo con la operación en tu base antes de llamar** y reusalo en cada reintento. Así, si tu proceso se corta después de mandar la request, el reintento no transfiere ni factura dos veces.
 - En `payments.create`, `payments.refund`, `identity.verifications.create`, `identity.verifications.cancel`, `psp.customers.create` y las acciones de un cliente de Raya PSP (`block`, `unblock`, `close` y `recreate`) es opcional pero recomendada. Si no la pasás, el SDK genera una que protege solo los reintentos de esa llamada.
 - El SDK reintenta siempre con la misma clave. La que usó queda en `obj.last_response.idempotency_key` y en `error.idempotency_key`, para que puedas reintentar más tarde.
 - Guardamos cada clave 24 horas, para toda tu cuenta. Usar la misma clave con otros parámetros da `IdempotencyError` con `code == "IDEMPOTENCY_KEY_REUSED"`.
-- Si una transferencia o un payout terminó `failed`, para intentarlo de nuevo usá una clave **nueva**: con la misma te devolvemos la respuesta original.
+- Si una transferencia, un payout o una factura terminó `failed` (o una factura, `rejected`), para intentarlo de nuevo usá una clave **nueva**: con la misma te devolvemos la respuesta original.
 
 ```python
 import uuid
@@ -681,6 +683,117 @@ except rayacash.ConflictError as error:
 - A veces nuestro equipo de cumplimiento necesita documentación sobre un cliente: te avisamos con `psp.document_request.created` (con un `PspDocumentRequest` en `event.data.object`) y un email, y la subís desde Raya PSP, en el dashboard. Cuando lo cerramos, te avisamos con `psp.document_request.closed`.
 - **Son datos personales de tus clientes:** el CUIL, el nombre y las fotos del DNI. Mandalos solo con el consentimiento de tu cliente y no los loguees; si mandás fotos, que sus URLs venzan pronto. `PspCustomer` nunca trae las fotos, los demás datos del registro (como su sexo o su nacionalidad) ni el motivo de un bloqueo.
 
+## Facturador
+
+Con el **Facturador** emitís facturas electrónicas de ARCA desde tu sistema: le mandás a la API el DNI de quien te compra y el monto, y nosotros emitimos la factura en ARCA a tu nombre, con tu certificado, y te avisamos cuando tiene su CAE. Es una Factura B si sos Responsable Inscripto (con el IVA del 21 % incluido en el monto) o una Factura C si sos monotributista (sin IVA), siempre a un consumidor final identificado por su DNI. Si en el menú de Negocios del dashboard aparece «Facturador», tu cuenta ya lo tiene. Si no aparece, tu cuenta todavía no lo tiene. Va con tu clave secreta y solo en tu cuenta real: todavía no está disponible en el [sandbox](#sandbox) (con una clave de prueba responde 403 `SANDBOX_NOT_SUPPORTED`). `client.invoices` existe desde la 1.4.0. La referencia completa de la API está en https://raya.cash/api/invoices.
+
+El flujo:
+
+**1. Configuralo en el dashboard.** En [Negocios › Facturador](https://raya.cash/dashboard/invoicing) cargás tu punto de venta, el certificado y la clave privada de ARCA, tu condición frente al IVA (Responsable Inscripto o Monotributo) y el concepto de lo que facturás (productos, servicios o productos y servicios). En unos segundos verificamos con ARCA que todo funcione. El certificado tiene que ser del CUIT o CUIL de tu cuenta: creá uno solo para Raya, asociado al servicio de facturación electrónica (wsfe), y usá un punto de venta de web services que no use ningún otro sistema. El certificado y la clave privada se cargan solo ahí: nunca viajan por la API ni los necesita tu servidor.
+
+**2. Creá la factura** desde tu servidor. Respondemos enseguida (`202`) con la factura en `"pending"` y la emitimos en ARCA en segundo plano. `idempotency_key` es obligatoria, como en `transfers.create`: guardala con la venta antes de llamar y reusala en cada reintento, así nunca se emiten dos facturas por la misma venta.
+
+```python
+import rayacash
+
+client = rayacash.RayaClient()  # con tu clave secreta, de RAYA_SECRET_KEY
+
+invoice = client.invoices.create(
+    dni="12345678",  # el DNI de quien te compra, como texto
+    amount=15000,  # el total, en pesos: en una Factura B, con el IVA incluido
+    metadata={"pedido": "1042"},
+    idempotency_key=venta.invoice_idempotency_key,  # un UUID v4 guardado con la venta
+)
+print(invoice.id, invoice.status)  # inv_…, pending
+```
+
+El tipo de factura, el punto de venta y el concepto salen de tu configuración: no se mandan. Si el Facturador todavía no puede emitir, `create` responde `PermissionDeniedError` con `code == "FACTURADOR_NOT_READY"` y el motivo en `error.data["reason"]`:
+
+```python
+try:
+    invoice = client.invoices.create(dni="12345678", amount=15000, idempotency_key=key)
+except rayacash.PermissionDeniedError as error:
+    if error.code == "FACTURADOR_NOT_READY" and error.data:
+        print(f"El Facturador no está listo: {error.data['reason']}")
+```
+
+| `error.data["reason"]` | Qué quiere decir |
+|---|---|
+| `not_configured` | Todavía no lo configuraste. |
+| `checking` | Estamos verificando tu configuración con ARCA: suele tardar unos segundos. |
+| `action_required` | Hay algo para revisar (por ejemplo, ARCA no autorizó tu certificado o tu punto de venta): mirá qué en Negocios › Facturador. |
+| `certificate_expired` | Venció tu certificado: cargá uno nuevo. |
+| `disabled` | Lo desactivaste: para volver a emitir, configuralo de nuevo en Negocios › Facturador. |
+
+**3. Esperá el webhook.** `invoice.issued` avisa que ARCA autorizó la factura y le asignó su CAE; si no, llega `invoice.rejected` (ARCA la rechazó) o `invoice.failed` (no pudimos emitirla). `event.data.object` es la `Invoice`. Ver [Webhooks](#webhooks).
+
+```python
+import os
+
+event = rayacash.Webhook.construct_event(payload, sig_header, os.environ["RAYA_WEBHOOK_SECRET"])
+invoice = event.data.object  # una Invoice, como estaba en ese momento
+if event.type == "invoice.issued" and isinstance(invoice, rayacash.Invoice):
+    guardar_factura(invoice.metadata["pedido"], invoice.number, invoice.cae)
+```
+
+**4. Leé la factura con `retrieve`.** Dala por emitida solo cuando `status` es `"issued"`: recién ahí trae su número y su CAE.
+
+```python
+invoice = client.invoices.retrieve("inv_8Tq3Wm6Xz1Kb4Nr7Pd2Lf9Hc")
+if invoice.status == "issued":
+    print(invoice.point_of_sale, invoice.number)  # 5 1234: el comprobante 00005-00001234
+    print(invoice.cae, invoice.cae_expires_on)  # el CAE de 14 dígitos y su vencimiento
+    print(invoice.net_amount, invoice.vat_amount)  # 12396.69 2603.31 (en una Factura C, None)
+elif invoice.failure_reason is not None:
+    print(invoice.failure_reason.code)  # decidí con code, no con message
+    for message in invoice.arca_messages:
+        print(message.type, message.code, message.message)  # lo que dijo ARCA, tal cual
+```
+
+**5. Listá las tuyas**, de la más nueva a la más vieja:
+
+```python
+for invoice in client.invoices.list(
+    status="issued",  # pending, issued, rejected o failed
+    created_gte="2026-11-01T00:00:00-03:00",  # datetime con zona o string ISO 8601
+    created_lt="2026-12-01T00:00:00-03:00",
+    limit=100,  # de 1 a 100 (por defecto, 20)
+).auto_paging_iter():
+    print(invoice.id, invoice.number, invoice.amount)
+```
+
+La lista no se filtra por DNI (sería un dato personal en la URL): guardá el `id` de cada factura con tu venta.
+
+| Estado | Qué quiere decir |
+|---|---|
+| `pending` | La estamos emitiendo en ARCA. Casi siempre se resuelve en segundos; si ARCA no responde, puede tardar más: esperá el webhook. |
+| `issued` | ARCA la autorizó: tiene `number`, `cae`, `cae_expires_on` e `issued_on` (la fecha del comprobante). Es el único estado que la da por emitida. |
+| `rejected` | ARCA la rechazó y no se emitió: `failure_reason.code` es `arca_rejected` y `arca_messages` dice por qué. |
+| `failed` | No pudimos emitirla y no quedó registrada en ARCA: `failure_reason.code` dice por qué. |
+
+| `failure_reason.code` | Qué pasó y qué hacer (`failure_reason.message`) |
+|---|---|
+| `arca_rejected` | ARCA rechazó la factura: arca_messages dice por qué. |
+| `facturador_not_ready` | Tu Facturador no estaba listo para emitirla. Revisalo en Negocios › Facturador y creá la factura de nuevo. |
+| `not_issued` | No pudimos emitirla y no quedó registrada en ARCA. Creala de nuevo. |
+| `numbering_conflict` | Otro sistema emitió comprobantes con el mismo punto de venta. Usá un punto de venta solo para Raya y creá la factura de nuevo. |
+| `account_unavailable` | Tu cuenta no puede emitir facturas en este momento. Escribinos a soporte@raya.cash. |
+
+- `issued`, `rejected` y `failed` son finales. Para volver a intentar una factura `rejected` o `failed`, creala de nuevo con otra `idempotency_key`: con la misma te devolvemos la misma factura.
+- `arca_messages` trae los errores y las observaciones de ARCA tal como los devolvió (`type` es `"error"` u `"observation"`), también en una factura `issued` que ARCA autorizó con observaciones. `[]` si no hay.
+- En una Factura B, `net_amount` es `amount` sin el IVA, redondeado al centavo, y `vat_amount` es la diferencia: `net_amount + vat_amount == amount`. Para sumarlos con exactitud, convertilos a `Decimal` (ver [Montos](#montos)). En una Factura C, `net_amount` es igual a `amount` y `vat_amount` es `None`.
+
+| Método | Endpoint |
+|---|---|
+| `client.invoices.create(*, dni, amount, metadata=None, idempotency_key, options=None)` | `POST /v1/invoices` |
+| `client.invoices.retrieve(invoice_id, *, options=None)` | `GET /v1/invoices/:id` |
+| `client.invoices.list(*, status=None, created_gte=None, created_lt=None, limit=None, cursor=None, options=None)` | `GET /v1/invoices` |
+
+- Cada método tiene su `*_async`. En el estilo global, `rayacash.Invoice.create/retrieve/list(...)`.
+- Sin `idempotency_key`, `create` da `TypeError` sin mandar nada. Antes de mandar, el SDK solo mira lo que nunca puede andar: `dni` tiene que ser un `str` (el DNI como texto, no un número) y `metadata`, un dict; `amount` acepta lo mismo que en los pagos. Los dígitos los valida la API: le saca al DNI los puntos, los espacios, los guiones y los ceros de adelante, y si no quedan de 6 a 8 dígitos responde `InvalidRequestError` con `PARAMETER_INVALID` y `error.param == "dni"`. En una Factura B, `amount` es de al menos `0.03` (con `0.01` o `0.02` el IVA da cero): con menos, `InvalidRequestError` con `PARAMETER_INVALID`, `error.param == "amount"` y el mensaje «amount tiene que ser de al menos 0.03 en una Factura B: con menos, el IVA del 21 % da cero y ARCA la rechaza.»
+- Los errores propios: `FACTURADOR_NOT_READY` (403, `PermissionDeniedError`, con el motivo en `error.data["reason"]`) e `INVOICE_NOT_FOUND` (404, `NotFoundError`). Si tenés demasiadas facturas sin emitir todavía, `create` responde `RateLimitError` con `error.retry_after`: el SDK no se queda esperando; reintentá más tarde con la misma `idempotency_key`.
+- **El DNI de quien te compra es un dato personal:** mandalo solo para facturarle y no lo loguees (`print(invoice)` lo muestra).
+
 ## Errores
 
 Todos los errores heredan de `rayacash.RayaError`. **Decidí con `error.code`** (estable), nunca con `error.message` (texto en castellano para personas, puede cambiar). Si llega un código que el SDK no conoce, la clase sale del código HTTP.
@@ -688,9 +801,9 @@ Todos los errores heredan de `rayacash.RayaError`. **Decidí con `error.code`** 
 | Clase | HTTP | Códigos | Qué hacer |
 |---|---|---|---|
 | `InvalidRequestError` | 400, 405, 413 y los demás `4xx` | `PARAMETER_MISSING`, `PARAMETER_INVALID`, `PARAMETER_UNKNOWN`, `INVALID_JSON`, `OAUTH_GRANT_INVALID`… | Corregí la request: `error.param` dice qué parámetro falló. `OAUTH_GRANT_INVALID`: el `code` ya se usó, venció o la `redirect_uri` no coincide. |
-| `NotFoundError` (subclase de la anterior) | 404 | `PAYMENT_NOT_FOUND`, `TRANSFER_NOT_FOUND`, `ORDER_NOT_FOUND`, `USER_NOT_FOUND`, `NOT_FOUND`, `PAYOUT_NOT_FOUND`, `VERIFICATION_NOT_FOUND`, `CUSTOMER_NOT_FOUND` | No existe, no es de tu cuenta o no es de una cuenta conectada a tu app. |
+| `NotFoundError` (subclase de la anterior) | 404 | `PAYMENT_NOT_FOUND`, `TRANSFER_NOT_FOUND`, `ORDER_NOT_FOUND`, `USER_NOT_FOUND`, `NOT_FOUND`, `PAYOUT_NOT_FOUND`, `VERIFICATION_NOT_FOUND`, `CUSTOMER_NOT_FOUND`, `INVOICE_NOT_FOUND` | No existe, no es de tu cuenta o no es de una cuenta conectada a tu app. |
 | `AuthenticationError` | 401 | `API_KEY_MISSING`, `API_KEY_INVALID`, `API_KEY_EXPIRED`, `ACCESS_TOKEN_INVALID`, `ACCESS_TOKEN_REVOKED`, `OAUTH_CLIENT_INVALID`… | Revisá la clave secreta o el `access_token`. `ACCESS_TOKEN_REVOKED`: la cuenta desconectó tu app. |
-| `PermissionDeniedError` | 403 | `API_KEY_ACCOUNT_LOCKED`, `API_NOT_ENABLED`, `MERCHANT_NOT_CONFIGURED`, `TRANSFERS_BLOCKED`, `CONNECTED_ACCOUNT_LOCKED`, `CONNECTED_ACCOUNT_NOT_CONFIGURED`, `APP_DISABLED`, `PAYOUT_ORIGIN_UNAVAILABLE`, `SANDBOX_NOT_SUPPORTED`, `SANDBOX_ONLY`, `IDENTITY_NOT_ACTIVATED`, `PSP_NOT_ACTIVATED` | La cuenta (o la cuenta conectada, o tu app) no puede hacer esto todavía. `PAYOUT_ORIGIN_UNAVAILABLE`: configurá el descriptor del comercio. `SANDBOX_NOT_SUPPORTED`: ese endpoint todavía no está disponible en el sandbox (usaste una clave de prueba, por ejemplo en Identidad). `SANDBOX_ONLY`: `client.test_helpers` solo funciona en un sandbox, con su clave de prueba. `IDENTITY_NOT_ACTIVATED`: activá Identidad desde el dashboard antes de crear verificaciones. `PSP_NOT_ACTIVATED`: activá Raya PSP desde el dashboard antes de crear clientes o transferir en su nombre. Si no lo aprobamos, escribinos a soporte@raya.cash. |
+| `PermissionDeniedError` | 403 | `API_KEY_ACCOUNT_LOCKED`, `API_NOT_ENABLED`, `MERCHANT_NOT_CONFIGURED`, `TRANSFERS_BLOCKED`, `CONNECTED_ACCOUNT_LOCKED`, `CONNECTED_ACCOUNT_NOT_CONFIGURED`, `APP_DISABLED`, `PAYOUT_ORIGIN_UNAVAILABLE`, `SANDBOX_NOT_SUPPORTED`, `SANDBOX_ONLY`, `IDENTITY_NOT_ACTIVATED`, `PSP_NOT_ACTIVATED`, `FACTURADOR_NOT_READY` | La cuenta (o la cuenta conectada, o tu app) no puede hacer esto todavía. `PAYOUT_ORIGIN_UNAVAILABLE`: configurá el descriptor del comercio. `SANDBOX_NOT_SUPPORTED`: ese endpoint todavía no está disponible en el sandbox (usaste una clave de prueba, por ejemplo en Identidad). `SANDBOX_ONLY`: `client.test_helpers` solo funciona en un sandbox, con su clave de prueba. `IDENTITY_NOT_ACTIVATED`: activá Identidad desde el dashboard antes de crear verificaciones. `PSP_NOT_ACTIVATED`: activá Raya PSP desde el dashboard antes de crear clientes o transferir en su nombre. Si no lo aprobamos, escribinos a soporte@raya.cash. `FACTURADOR_NOT_READY`: el Facturador todavía no puede emitir facturas; `error.data["reason"]` dice por qué (revisalo en Negocios › Facturador). |
 | `IdempotencyError` | 409 | `IDEMPOTENCY_KEY_REUSED`, `IDEMPOTENCY_KEY_IN_USE` | Una clave por operación; si está en uso, reintentá más tarde con la misma. |
 | `ConflictError` | 409 | `PAYMENT_NOT_REFUNDABLE`, `PAYMENT_NOT_PENDING`, `VERIFICATION_NOT_CANCELABLE`, `CUSTOMER_ALREADY_EXISTS`, `CUSTOMER_STATUS_CONFLICT` | Mirá `error.data["status"]` (el estado actual) y, en un reembolso, `error.data.get("reason")`. `PAYMENT_NOT_PENDING`: el pago de prueba que querés simular ya no está pendiente. `CUSTOMER_ALREADY_EXISTS`: ya tenés ese cliente de Raya PSP, o ya usaste esa verificación de Identidad para otro (`error.data["customer"]`). `CUSTOMER_STATUS_CONFLICT`: su estado no permite la operación (también `error.data["blocked_by"]`). |
 | `UnprocessableEntityError` | 422 | `INSUFFICIENT_BALANCE`, `LIMIT_EXCEEDED`, `DESTINATION_NOT_FOUND`, `DESTINATION_INACTIVE`, `DESTINATION_NOT_SUPPORTED`, `REFUND_FAILED`, `CUSTOMER_INSUFFICIENT_BALANCE`, `CUSTOMER_DATA_MISMATCH`, `TAX_ID_NOT_REGISTERED` | No se arregla reintentando: mostráselo a la persona. `CUSTOMER_DATA_MISMATCH`: la razón social de una persona jurídica no coincide con la del Registro Nacional de Sociedades (`error.data["field"]` es `"name"`). |
@@ -721,7 +834,7 @@ Un reembolso que la red todavía no confirmó sale como `APIError` con `code == 
 
 ## Webhooks
 
-Te avisamos en tu servidor apenas pasa algo: `payment.succeeded` cuando llega la transferencia de un pago, `transfer.received` cuando te depositan, `connect.order.succeeded` cuando se acredita un pago de tu app, `identity.verification.verified` cuando verificamos la identidad de una persona, `psp.transfer.received` cuando un cliente de Raya PSP recibe una transferencia, etc. **Antes de procesar un evento, verificá la firma**:
+Te avisamos en tu servidor apenas pasa algo: `payment.succeeded` cuando llega la transferencia de un pago, `transfer.received` cuando te depositan, `connect.order.succeeded` cuando se acredita un pago de tu app, `identity.verification.verified` cuando verificamos la identidad de una persona, `invoice.issued` cuando ARCA emite una factura tuya, `psp.transfer.received` cuando un cliente de Raya PSP recibe una transferencia, etc. **Antes de procesar un evento, verificá la firma**:
 
 ```python
 import os
@@ -765,10 +878,12 @@ def raya_webhook():
 | `payment.created`, `payment.succeeded`, `payment.failed`, `payment.refunded` | `Payment` |
 | `connect.order.created`, `connect.order.succeeded`, `connect.order.failed`, `connect.order.refunded` | `ConnectOrder` (le llegan al dueño de la app) |
 | `identity.verification.verified`, `identity.verification.declined`, `identity.verification.expired`, `identity.verification.canceled` | `IdentityVerification`, siempre con `person` en `None` (pedila con `client.identity.verifications.retrieve`) |
+| `invoice.issued`, `invoice.rejected`, `invoice.failed` | `Invoice` (la factura emitida con su CAE, rechazada por ARCA o fallida) |
 | `psp.customer.activated`, `psp.customer.updated`, `psp.customer.failed`, `psp.customer.rejected`, `psp.customer.blocked`, `psp.customer.unblocked`, `psp.customer.closed` | `PspCustomer` |
 | `psp.transfer.received`, `psp.transfer.sent`, `psp.transfer.failed` | `PspTransfer` (un cliente bloqueado sigue recibiendo: llega como `psp.transfer.received`) |
 | `psp.document_request.created`, `psp.document_request.closed` | `PspDocumentRequest` |
 
+- Los `invoice.*` los elegís en Developers › Webhooks, en el grupo «Facturador», que aparece cuando tu cuenta tiene el Facturador.
 - Los `psp.*` los elegís en Developers › Webhooks, en el grupo «Raya PSP», que aparece cuando tu cuenta tiene Raya PSP aprobado. Puede llegar un `psp.transfer.received` antes que el `psp.customer.activated` de ese cliente.
 - «Enviar evento de prueba» (en Developers › Webhooks) manda un `webhook.test`: respondé `2xx` e ignoralo.
 - `event.livemode` es `True` en los eventos de tu cuenta real y `False` en los de un [sandbox](#sandbox). Un evento creado antes de que la API sumara este campo (un reintento o un reenvío desde el dashboard) no lo trae, y de antemano no sabés cuál es así: leelo siempre con `event.get("livemode", True)`, porque `event.livemode` levanta `AttributeError` si falta.
@@ -826,7 +941,7 @@ print(simulated.status)  # succeeded: 44500 al saldo de prueba del usuario y 500
 | `client.test_helpers.payments.simulate_transfer(payment_id, *, amount=None, options=None)` | `POST /v1/test/payments/:id/simulate_transfer` |
 
 - Tiene su `*_async`. En el estilo global, `rayacash.Payment.simulate_transfer(...)`, con `rayacash.api_key` igual a la clave secreta de prueba. `client.test_helpers` existe desde la 1.2.0.
-- **Todavía no está disponible en el sandbox:** las transferencias (`client.transfers`), los payouts (`client.connect.payouts`), Identidad (`client.identity`) y Raya PSP (`client.psp`) responden `PermissionDeniedError` con `code == "SANDBOX_NOT_SUPPORTED"`. Tampoco Raya.js con la clave pública de prueba, los links de pago ni la configuración del negocio.
+- **Todavía no está disponible en el sandbox:** las transferencias (`client.transfers`), los payouts (`client.connect.payouts`), Identidad (`client.identity`), Raya PSP (`client.psp`) y el Facturador (`client.invoices`) responden `PermissionDeniedError` con `code == "SANDBOX_NOT_SUPPORTED"`. Tampoco Raya.js con la clave pública de prueba, los links de pago ni la configuración del negocio.
 - **Al pasar a producción:** usá tu clave real (`raya_sk_live_…`) con tu negocio configurado (ver [Antes de empezar](#antes-de-empezar)) y sacá las llamadas a `client.test_helpers`, que con una clave real responden `SANDBOX_ONLY`. Los destinos de webhooks y las apps del sandbox no pasan a tu cuenta real: creá los tuyos ahí (en `RAYA_WEBHOOK_SECRET`, el secreto del destino de tu cuenta real). En tu cuenta real, lo cobrado se suma al saldo cuando se liquida, un pago de menos se devuelve solo y un reembolso puede dar `INSUFFICIENT_BALANCE`.
 
 ## Tests de tu integración
@@ -872,7 +987,7 @@ client = rayacash.RayaClient(
 ```
 
 - **Proxies y certificados:** pasá tus propios `httpx.Client` / `httpx.AsyncClient`. httpx también respeta `HTTPS_PROXY`.
-- **`app_info`:** identifica tu plugin en el `User-Agent` (`rayacash-python/1.3.0 … mi-plugin/1.2.0`), que ves en [Developers › Logs](https://raya.cash/dashboard/developers/logs). En el estilo global: `rayacash.set_app_info("mi-plugin", version="1.2.0")`.
+- **`app_info`:** identifica tu plugin en el `User-Agent` (`rayacash-python/1.4.0 … mi-plugin/1.2.0`), que ves en [Developers › Logs](https://raya.cash/dashboard/developers/logs). En el estilo global: `rayacash.set_app_info("mi-plugin", version="1.2.0")`.
 - **Logging:** el SDK usa el logger `rayacash`. Con `RAYA_LOG=info` (o `rayacash.log = "info"`) ves cada request, su status, su `request_id` y los reintentos en stderr; con `debug`, también la query y la idempotency key. Vale para todo el proceso, también para cada `RayaClient`. Nunca logueamos la clave ni los bodies.
 - **Cerrar:** `client.close()` / `await client.aclose()`, o usá `with` / `async with`.
 - **Endpoints nuevos:** si la API suma un endpoint antes que el SDK, usá `client.raw_request("get", "/v1/…", params=…, body=…)`: tiene la misma autenticación, reintentos y errores. La query va en `params`, nunca en la ruta.
@@ -884,6 +999,7 @@ client = rayacash.RayaClient(
 - El SDK rechaza la clave pública (`raya_pk_…`) sin mandar nada, nunca muestra completa la clave ni un `access_token` (`repr(client)` y `str(token)` los enmascaran) y nunca sigue redirects.
 - **`person` y las imágenes de Identidad son datos personales.** No los loguees (`print(verification)` muestra `person`), guardá solo lo que necesitás y bajá las imágenes desde tu servidor. Los eventos nunca traen `person`, e Identity.js, en el navegador, no usa ninguna clave: solo el `id` de la verificación.
 - **El CUIL, el nombre y las fotos del DNI de tus clientes de Raya PSP también son datos personales.** Mandalos solo con su consentimiento, no los loguees y, si mandás fotos, que sus URLs venzan pronto.
+- **El DNI de quien te compra también es un dato personal:** mandalo solo para facturarle y no lo loguees. El certificado y la clave privada de ARCA del Facturador los cargás solo en Negocios › Facturador: nunca van en tu código, en tu repositorio ni en una request a la API.
 - Si la clave se filtró, rotala en Developers › API Keys con vencimiento «Ahora»: la anterior deja de funcionar al instante.
 - Las requests que hacés con la clave secreta quedan 30 días en [Developers › Logs](https://raya.cash/dashboard/developers/logs).
 

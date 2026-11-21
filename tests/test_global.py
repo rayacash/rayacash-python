@@ -12,6 +12,7 @@ import pytest
 
 import rayacash
 from rayacash._requestor import HTTPClientManager
+from tests import fixtures_facturador as facturador
 from tests import fixtures_psp as psp
 from tests.fixtures import (
     BALANCE,
@@ -740,5 +741,89 @@ def test_psp_without_any_key(api: MockAPI, call: Caller) -> None:
     ):
         with pytest.raises(rayacash.AuthenticationError) as info:
             call(owner, method, *args)
+        assert info.value.code == "API_KEY_MISSING"
+    assert api.requests == []
+
+
+# --- Facturador: rayacash.Invoice, con la clave secreta -------------------------------------------
+
+
+def test_invoice_endpoints(global_api: MockAPI, call: Caller) -> None:
+    api = global_api
+    api.add(202, facturador.INVOICE_PENDING)
+    invoice = call(
+        rayacash.Invoice,
+        "create",
+        metadata={"pedido": "1042"},
+        amount=15000,
+        dni=facturador.DNI,
+        idempotency_key="venta-1042",
+    )
+    assert type(invoice) is rayacash.Invoice
+    assert invoice.status == "pending"
+    assert api.last.method == "POST"
+    assert api.last.url.path == "/v1/invoices"
+    assert list(json.loads(api.last.content).items()) == list(facturador.CREATE_BODY.items())
+    assert api.last.headers["authorization"] == f"Bearer {TEST_KEY}"
+    assert api.last.headers["idempotency-key"] == "venta-1042"
+
+    api.add(200, facturador.INVOICE_ISSUED)
+    issued = call(rayacash.Invoice, "retrieve", facturador.INVOICE_ID)
+    assert (issued.status, issued.cae) == ("issued", facturador.CAE)
+    assert api.last.url.path == f"/v1/invoices/{facturador.INVOICE_ID}"
+
+    api.add(200, facturador.INVOICE_LIST)
+    page = call(rayacash.Invoice, "list", status="issued", limit=2)
+    assert type(page) is rayacash.ListObject
+    assert [type(item) for item in page] == [rayacash.Invoice] * 2
+    assert dict(api.last.url.params) == {"status": "issued", "limit": "2"}
+
+
+def test_invoice_create_requires_an_idempotency_key_in_the_global_style(
+    global_api: MockAPI, call: Caller
+) -> None:
+    invoice: Any = rayacash.Invoice  # llamadas que el type checker ya rechaza
+    with pytest.raises(TypeError, match="idempotency_key"):
+        call(invoice, "create", dni=facturador.DNI, amount=15000)
+    with pytest.raises(TypeError, match=r"^invoices\.create necesita idempotency_key"):
+        call(invoice, "create", dni=facturador.DNI, amount=15000, idempotency_key=None)
+    with pytest.raises(TypeError, match=r"^dni tiene que ser un DNI de 6 a 8 dígitos, como texto"):
+        call(invoice, "create", dni=12345678, amount=15000, idempotency_key="k")
+    assert global_api.requests == []
+
+
+def test_invoice_events_from_construct_event(global_api: MockAPI) -> None:
+    # Un invoice.issued firmado, de punta a punta: la factura llega con su número y su CAE.
+    body = json.dumps(facturador.EVENT_INVOICE_ISSUED)
+    header = rayacash.WebhookSignature.generate_header(body, WEBHOOK_SECRET)
+    event = rayacash.Webhook.construct_event(body, header, WEBHOOK_SECRET)
+    assert event.type == "invoice.issued"
+    invoice = event.data.object
+    assert isinstance(invoice, rayacash.Invoice)
+    assert (invoice.number, invoice.cae) == (1234, facturador.CAE)
+    # Para el estado de ahora, retrieve con la configuración global.
+    global_api.add(200, facturador.INVOICE_ISSUED)
+    assert rayacash.Invoice.retrieve(invoice.id).status == "issued"
+    assert global_api.last.headers["authorization"] == f"Bearer {TEST_KEY}"
+
+
+def test_invoice_with_a_key_per_call(api: MockAPI, call: Caller) -> None:
+    rayacash.http_client = api.sync_client()
+    rayacash.async_http_client = api.async_client()
+    api.add(200, facturador.INVOICE_ISSUED)
+    call(rayacash.Invoice, "retrieve", facturador.INVOICE_ID, options={"api_key": OTHER_KEY})
+    assert api.last.headers["authorization"] == f"Bearer {OTHER_KEY}"
+
+
+def test_invoice_without_any_key(api: MockAPI, call: Caller) -> None:
+    rayacash.http_client = api.sync_client()
+    rayacash.async_http_client = api.async_client()
+    for method, args, kwargs in (
+        ("create", (), {"dni": facturador.DNI, "amount": 15000, "idempotency_key": "k"}),
+        ("retrieve", (facturador.INVOICE_ID,), {}),
+        ("list", (), {}),
+    ):
+        with pytest.raises(rayacash.AuthenticationError) as info:
+            call(rayacash.Invoice, method, *args, **kwargs)
         assert info.value.code == "API_KEY_MISSING"
     assert api.requests == []

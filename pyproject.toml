@@ -5,13 +5,13 @@ build-backend = "hatchling.build"
 [project]
 name = "rayacash"
 dynamic = ["version"]
-description = "SDK oficial de Python para la API de Raya Cash: pagos por transferencia, transferencias, balance, webhooks, Raya Connect (pagos de apps a nombre de cuentas conectadas), Identidad (verificación de identidad) y Raya PSP (cuentas con CVU a nombre de tus clientes)."
+description = "SDK oficial de Python para la API de Raya Cash: pagos por transferencia, transferencias, balance, webhooks, Raya Connect (pagos de apps a nombre de cuentas conectadas), Identidad (verificación de identidad), Raya PSP (cuentas con CVU a nombre de tus clientes) y Facturador (facturas electrónicas de ARCA)."
 readme = "README.md"
 requires-python = ">=3.9"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "Raya Cash", email = "soporte@raya.cash" }]
-keywords = ["raya", "raya cash", "pagos", "transferencias", "cvu", "cbu", "argentina", "api", "sdk", "oauth", "connect", "marketplace", "psp"]
+keywords = ["raya", "raya cash", "pagos", "transferencias", "cvu", "cbu", "argentina", "api", "sdk", "oauth", "connect", "marketplace", "psp", "facturador", "factura electronica", "arca"]
 classifiers = [
   "Development Status :: 5 - Production/Stable",
   "Framework :: AsyncIO",
@@ -90,7 +90,7 @@ ignore = ["RUF001", "RUF002", "RUF003", "A003"]
 
 [tool.mypy]
 strict = true
-files = ["src", "tests", "examples/conciliar_depositos.py", "examples/enviar_transferencia.py", "examples/cobrar_con_un_pago.py", "examples/reembolsar_un_pago.py", "examples/operar_clientes_psp.py", "scripts"]
+files = ["src", "tests", "examples/conciliar_depositos.py", "examples/enviar_transferencia.py", "examples/cobrar_con_un_pago.py", "examples/reembolsar_un_pago.py", "examples/operar_clientes_psp.py", "examples/emitir_facturas.py", "scripts"]
 
 [tool.pyright]
 include = ["src", "tests/typecheck"]

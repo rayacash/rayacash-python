@@ -1,4 +1,4 @@
-"""Los 33 endpoints, en sync y en async: método, ruta, query, body y headers exactos."""
+"""Los 36 endpoints, en sync y en async: método, ruta, query, body y headers exactos."""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ import httpx
 import pytest
 
 import rayacash
+from tests import fixtures_facturador as facturador
 from tests import fixtures_psp as psp
 from tests.fixtures import (
     BALANCE,
@@ -2740,3 +2741,497 @@ def test_psp_is_not_available_in_the_sandbox_yet(api: MockAPI, call: Caller) -> 
     assert info.value.code == "SANDBOX_NOT_SUPPORTED"
     assert api.last.headers["authorization"] == f"Bearer {SANDBOX_KEY}"
     assert len(api.requests) == 1
+
+
+# --- Facturador: invoices.create, invoices.retrieve e invoices.list, con la clave secreta -------
+
+INVOICES_URL = "https://api.raya.cash/v1/invoices"
+INVOICE_PARAMS: dict[str, Any] = {"dni": facturador.DNI, "amount": 15000, "idempotency_key": "k"}
+
+
+def _normalized_dni(value: str) -> str:
+    """Lo que hace la API con el dni antes de validarlo: le saca espacios, puntos, guiones y los
+    ceros de adelante."""
+    return re.sub(r"[\s.\-]", "", value).lstrip("0")
+
+
+def test_invoice_create(client: rayacash.RayaClient, api: MockAPI, call: Caller) -> None:
+    # 202: la creamos pending y la emitimos en ARCA en segundo plano.
+    api.add(202, facturador.INVOICE_PENDING)
+    invoice = call(
+        client.invoices,
+        "create",
+        idempotency_key=IDEMPOTENCY_KEY,
+        metadata={"pedido": "1042"},
+        amount=15000,
+        dni=facturador.DNI,
+    )
+    assert type(invoice) is rayacash.Invoice
+    assert invoice.object == "invoice"
+    assert invoice.id == facturador.INVOICE_ID
+    assert invoice.status == "pending"
+    assert invoice.type == "B"
+    assert (invoice.amount, invoice.net_amount, invoice.vat_amount) == (15000, 12396.69, 2603.31)
+    assert (invoice.dni, invoice.point_of_sale, invoice.concept) == (
+        facturador.DNI,
+        5,
+        "products",
+    )
+    # Mientras ARCA no la emite, sin número ni CAE.
+    assert (invoice.number, invoice.cae, invoice.issued_on, invoice.issued_at) == (None,) * 4
+    assert invoice.failure_reason is None
+    assert invoice.arca_messages == []
+    assert invoice.metadata == {"pedido": "1042"}
+    request = api.last
+    assert (request.method, str(request.url)) == ("POST", INVOICES_URL)
+    # El body va en el orden de la API (dni, amount, metadata), no en el de los kwargs.
+    assert request.content == b'{"dni":"12345678","amount":15000,"metadata":{"pedido":"1042"}}'
+    assert api.last_json() == facturador.CREATE_BODY
+    assert request.headers["content-type"] == "application/json"
+    assert request.headers["authorization"] == f"Bearer {TEST_KEY}"
+    assert request.headers["idempotency-key"] == IDEMPOTENCY_KEY
+    assert invoice.last_response is not None
+    assert invoice.last_response.idempotency_key == IDEMPOTENCY_KEY
+    assert invoice.last_response.http_status == 202
+
+
+def test_invoice_create_sends_only_what_you_pass(
+    client: rayacash.RayaClient, api: MockAPI, call: Caller
+) -> None:
+    api.add(202, {**facturador.INVOICE_PENDING, "metadata": {}})
+    invoice = call(client.invoices, "create", **INVOICE_PARAMS, metadata=None)
+    assert api.last.content == b'{"dni":"12345678","amount":15000}'
+    assert invoice.metadata == {}
+
+
+@pytest.mark.parametrize(
+    ("amount", "expected"),
+    [
+        (15000, b"15000"),
+        (15000.5, b"15000.5"),
+        ("15000.50", b"15000.5"),
+        (Decimal("1210.00"), b"1210"),
+        (Decimal("99999999.99"), b"99999999.99"),
+    ],
+)
+def test_invoice_amount_forms(
+    client: rayacash.RayaClient, api: MockAPI, amount: object, expected: bytes
+) -> None:
+    api.add(202, facturador.INVOICE_PENDING)
+    client.invoices.create(dni=facturador.DNI, amount=amount, idempotency_key="k")  # type: ignore[arg-type]
+    assert api.last.content == b'{"dni":"12345678","amount":' + expected + b"}"
+
+
+def test_invoice_create_requires_an_idempotency_key(
+    client: rayacash.RayaClient, api: MockAPI, call: Caller
+) -> None:
+    # Como en las transferencias: un reintento sin la misma clave emitiría otra factura.
+    invoices: Any = client.invoices  # llamadas que el type checker ya rechaza
+    params: dict[str, Any] = {"dni": facturador.DNI, "amount": 15000}
+    with pytest.raises(TypeError, match="idempotency_key"):
+        call(invoices, "create", **params)
+    with pytest.raises(
+        TypeError,
+        match=(
+            r"^invoices\.create necesita idempotency_key: generá un UUID v4 con "
+            r"str\(uuid\.uuid4\(\)\), guardalo con la venta antes de llamar y reusalo en cada "
+            r"reintento: invoices\.create\(dni=dni, amount=amount, "
+            r"idempotency_key=idempotency_key\)\.$"
+        ),
+    ):
+        call(invoices, "create", **params, idempotency_key=None)
+    with pytest.raises(ValueError, match=r"^idempotency_key tiene que tener de 1 a 255"):
+        call(invoices, "create", **params, idempotency_key="con espacios")
+    with pytest.raises(ValueError, match=r"^idempotency_key"):
+        call(invoices, "create", **params, idempotency_key="")
+    with pytest.raises(TypeError, match=r"^idempotency_key tiene que ser un str"):
+        call(invoices, "create", **params, idempotency_key=1234)
+    assert api.requests == []
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "error", "message"),
+    [
+        # dni es texto (la API no acepta un número): el SDK lo frena antes de mandar.
+        (
+            {"dni": 12345678},
+            TypeError,
+            r"^dni tiene que ser un DNI de 6 a 8 dígitos, como texto "
+            r'\(por ejemplo, "12345678"\)\.$',
+        ),
+        (
+            {"dni": None},
+            TypeError,
+            r"^dni tiene que ser un DNI de 6 a 8 dígitos, como texto "
+            r'\(por ejemplo, "12345678"\)\.$',
+        ),
+        ({"amount": True}, TypeError, "^amount no puede ser un bool"),
+        ({"amount": None}, TypeError, "^amount tiene que ser un número en pesos"),
+        ({"amount": "15.000,50"}, ValueError, "no es un número"),
+        ({"amount": float("nan")}, ValueError, "^amount tiene que ser un número finito"),
+        (
+            {"metadata": [("pedido", "1042")]},
+            TypeError,
+            "^metadata tiene que ser un dict de str a str",
+        ),
+        ({"metadata": "pedido=1042"}, TypeError, "^metadata tiene que ser un dict"),
+        ({"metadata": {1042: "pedido"}}, TypeError, "tienen que ser str"),
+        # El tipo, el punto de venta y el concepto salen de Negocios › Facturador.
+        ({"type": "B"}, TypeError, "type"),
+        ({"point_of_sale": 5}, TypeError, "point_of_sale"),
+        ({"concept": "services"}, TypeError, "concept"),
+        # Los nombres de Node.js no son de Python.
+        ({"idempotencyKey": "k"}, TypeError, "idempotencyKey"),
+    ],
+)
+def test_invoice_create_rejects_bad_shapes_before_sending(
+    client: rayacash.RayaClient,
+    api: MockAPI,
+    call: Caller,
+    kwargs: dict[str, object],
+    error: type[Exception],
+    message: str,
+) -> None:
+    with pytest.raises(error, match=message):
+        call(client.invoices, "create", **{**INVOICE_PARAMS, **kwargs})
+    assert api.requests == []
+
+
+@pytest.mark.parametrize("dni", ["12.345.678", " 12345678 ", "12-345-678", "0012345678"])
+def test_invoice_create_sends_the_dni_as_you_pass_it(
+    client: rayacash.RayaClient, api: MockAPI, call: Caller, dni: str
+) -> None:
+    # La API le saca los puntos, los espacios, los guiones y los ceros de adelante: el SDK no
+    # duplica la regla y la factura vuelve con el DNI limpio.
+    assert facturador.DNI_PATTERN.fullmatch(_normalized_dni(dni))
+    api.add(202, facturador.INVOICE_PENDING)
+    invoice = call(client.invoices, "create", **{**INVOICE_PARAMS, "dni": dni})
+    assert api.last_json()["dni"] == dni
+    assert invoice.dni == facturador.DNI
+
+
+@pytest.mark.parametrize("dni", ["", "1234", "123456789", "DNI 12345678", "12345678a", "000000"])
+def test_invoice_create_leaves_the_dni_digits_to_the_api(
+    client: rayacash.RayaClient, api: MockAPI, call: Caller, dni: str
+) -> None:
+    # De 6 a 8 dígitos, sin ceros adelante (la regla de la API y de estos tests): lo que no la
+    # cumple viaja igual y la API responde 400 PARAMETER_INVALID con el campo.
+    assert not facturador.DNI_PATTERN.fullmatch(_normalized_dni(dni))
+    api.add_error(400, "PARAMETER_INVALID", facturador.DNI_INVALID_MESSAGE, {"field": "dni"})
+    with pytest.raises(rayacash.InvalidRequestError) as info:
+        call(client.invoices, "create", **{**INVOICE_PARAMS, "dni": dni})
+    assert type(info.value) is rayacash.InvalidRequestError
+    assert info.value.code == "PARAMETER_INVALID"
+    assert info.value.message == facturador.DNI_INVALID_MESSAGE
+    assert info.value.param == "dni"
+    assert api.last_json()["dni"] == dni
+    assert len(api.requests) == 1  # los 4xx no se reintentan
+
+
+@pytest.mark.parametrize("reason", facturador.NOT_READY_REASONS)
+def test_invoice_create_when_the_facturador_is_not_ready(
+    client: rayacash.RayaClient, api: MockAPI, call: Caller, sleeps: list[float], reason: str
+) -> None:
+    message = facturador.ERROR_MESSAGES["FACTURADOR_NOT_READY"]
+    api.add_error(403, "FACTURADOR_NOT_READY", message, {"reason": reason})
+    with pytest.raises(rayacash.PermissionDeniedError) as info:
+        call(client.invoices, "create", **{**INVOICE_PARAMS, "idempotency_key": "venta-1042"})
+    assert type(info.value) is rayacash.PermissionDeniedError
+    assert info.value.code == "FACTURADOR_NOT_READY"
+    assert info.value.http_status == 403
+    assert info.value.message == message
+    assert info.value.data == {"reason": reason}
+    assert info.value.idempotency_key == "venta-1042"
+    assert len(api.requests) == 1  # no se reintenta
+    assert sleeps == []
+
+
+@pytest.mark.parametrize(
+    ("status", "code", "message", "data", "cls"),
+    [
+        (
+            400,
+            "PARAMETER_INVALID",
+            "amount tiene que ser un número con hasta 2 decimales.",
+            {"field": "amount"},
+            rayacash.InvalidRequestError,
+        ),
+        # La misma clave con otro dni o monto: es otra venta y lleva otra clave.
+        (
+            409,
+            "IDEMPOTENCY_KEY_REUSED",
+            "Ya usaste esta Idempotency-Key con otros datos. Usá una clave nueva para cada "
+            "operación.",
+            None,
+            rayacash.IdempotencyError,
+        ),
+        (
+            403,
+            "API_NOT_ENABLED",
+            "La API todavía no está habilitada para tu cuenta. Escribinos a soporte@raya.cash.",
+            None,
+            rayacash.PermissionDeniedError,
+        ),
+    ],
+)
+def test_invoice_create_errors_are_not_retried(
+    client: rayacash.RayaClient,
+    api: MockAPI,
+    call: Caller,
+    sleeps: list[float],
+    status: int,
+    code: str,
+    message: str,
+    data: dict[str, Any] | None,
+    cls: type[rayacash.RayaError],
+) -> None:
+    api.add_error(status, code, message, data)
+    with pytest.raises(cls) as info:
+        call(client.invoices, "create", **INVOICE_PARAMS)
+    assert type(info.value) is cls
+    assert info.value.code == code
+    assert info.value.message == message
+    assert info.value.data == data
+    assert info.value.idempotency_key == "k"
+    assert len(api.requests) == 1
+    assert sleeps == []
+
+
+def test_invoice_create_retries_with_the_same_key(
+    client: rayacash.RayaClient, api: MockAPI, call: Caller
+) -> None:
+    # Un corte en el medio no emite dos facturas: el reintento lleva la misma Idempotency-Key y la
+    # API devuelve el mismo 202.
+    api.fail_with(httpx.ConnectError("cortado"))
+    api.add(202, facturador.INVOICE_PENDING)
+    invoice = call(client.invoices, "create", **{**INVOICE_PARAMS, "idempotency_key": "venta-1"})
+    assert invoice.id == facturador.INVOICE_ID
+    assert [r.headers["idempotency-key"] for r in api.requests] == ["venta-1"] * 2
+    assert api.requests[0].content == api.requests[1].content
+
+
+def test_invoice_create_with_too_many_pending_is_not_retried(
+    client: rayacash.RayaClient, api: MockAPI, call: Caller, sleeps: list[float]
+) -> None:
+    # Demasiadas facturas sin emitir todavía: 429 con Retry-After: 300, más de lo que esperamos.
+    api.add_error(429, "RATE_LIMITED", headers={"Retry-After": "300"})
+    with pytest.raises(rayacash.RateLimitError) as info:
+        call(client.invoices, "create", **INVOICE_PARAMS)
+    assert info.value.retry_after == 300
+    assert info.value.idempotency_key == "k"
+    assert len(api.requests) == 1
+    assert sleeps == []
+
+
+def test_invoice_retrieve(client: rayacash.RayaClient, api: MockAPI, call: Caller) -> None:
+    api.add(200, facturador.INVOICE_ISSUED)
+    invoice = call(client.invoices, "retrieve", facturador.INVOICE_ID)
+    assert type(invoice) is rayacash.Invoice
+    assert invoice.status == "issued"
+    # Emitida: con su número, su CAE y la fecha del comprobante en ARCA.
+    assert (invoice.point_of_sale, invoice.number) == (5, 1234)
+    assert invoice.cae == facturador.CAE
+    assert (invoice.cae_expires_on, invoice.issued_on) == ("2026-11-28", "2026-11-18")
+    assert invoice.issued_at == "2026-11-18T14:30:09Z"
+    assert invoice.failure_reason is None
+    request = api.last
+    assert (request.method, str(request.url)) == ("GET", f"{INVOICES_URL}/{facturador.INVOICE_ID}")
+    assert request.content == b""
+    assert "content-type" not in request.headers
+    assert "idempotency-key" not in request.headers
+    assert request.headers["authorization"] == f"Bearer {TEST_KEY}"
+
+
+def test_invoice_retrieve_a_factura_c(client: rayacash.RayaClient, api: MockAPI) -> None:
+    # Monotributo: Factura C, sin IVA (el neto es el total).
+    api.add(200, facturador.INVOICE_C_ISSUED)
+    invoice = client.invoices.retrieve(facturador.INVOICE_C_ID)
+    assert (invoice.type, invoice.concept) == ("C", "services")
+    assert invoice.net_amount == invoice.amount == 15000
+    assert invoice.vat_amount is None
+
+
+def test_invoice_rejected_and_failed_have_their_reason(
+    client: rayacash.RayaClient, api: MockAPI
+) -> None:
+    api.add(200, facturador.INVOICE_REJECTED)
+    rejected = client.invoices.retrieve(facturador.INVOICE_ID)
+    assert rejected.status == "rejected"
+    assert type(rejected.failure_reason) is rayacash.Invoice.FailureReason
+    assert rejected.failure_reason.code == "arca_rejected"
+    assert rejected.failure_reason.message == facturador.FAILURE_MESSAGES["arca_rejected"]
+    # Lo que dijo ARCA, tal cual.
+    (message,) = rejected.arca_messages
+    assert type(message) is rayacash.Invoice.ArcaMessage
+    assert (message.type, message.code) == ("observation", 10015)
+    assert (rejected.number, rejected.cae) == (None, None)
+    api.add(200, facturador.INVOICE_FAILED)
+    failed = client.invoices.retrieve(facturador.INVOICE_ID)
+    assert failed.failure_reason is not None
+    assert failed.failure_reason.code == "not_issued"
+    assert failed.arca_messages == []
+
+
+def test_invoice_not_found(client: rayacash.RayaClient, api: MockAPI, call: Caller) -> None:
+    api.add_error(404, "INVOICE_NOT_FOUND", facturador.ERROR_MESSAGES["INVOICE_NOT_FOUND"])
+    with pytest.raises(rayacash.NotFoundError) as info:
+        call(client.invoices, "retrieve", facturador.PREVIOUS_ID)
+    assert type(info.value) is rayacash.NotFoundError
+    assert info.value.code == "INVOICE_NOT_FOUND"
+    assert info.value.http_status == 404
+    assert info.value.message == "No encontramos esa factura."
+    assert info.value.data is None
+    assert info.value.param is None
+    assert len(api.requests) == 1
+
+
+@pytest.mark.parametrize(
+    ("value", "message"),
+    [
+        ("", "no puede estar vacío"),
+        ("   ", "no puede estar vacío"),
+        (".", r'no puede ser "\." ni "\.\."'),
+        ("..", r'no puede ser "\." ni "\.\."'),
+    ],
+)
+def test_invoice_ids_fail_before_sending(
+    client: rayacash.RayaClient, api: MockAPI, call: Caller, value: str, message: str
+) -> None:
+    with pytest.raises(ValueError, match=rf"^invoice_id {message}\.$"):
+        call(client.invoices, "retrieve", value)
+    assert api.requests == []
+
+
+def test_invoice_ids_are_strings_and_are_encoded(
+    client: rayacash.RayaClient, api: MockAPI, call: Caller
+) -> None:
+    with pytest.raises(TypeError, match=r"^invoice_id tiene que ser un str, no int\.$"):
+        call(client.invoices, "retrieve", 1234)
+    assert api.requests == []
+    # Un id sin el formato inv_ no se valida acá: lo responde la API (404). Viaja codificado.
+    api.add(200, facturador.INVOICE_ISSUED)
+    call(client.invoices, "retrieve", "../balance")
+    assert api.last.url.raw_path == b"/v1/invoices/..%2Fbalance"
+    api.add(200, facturador.INVOICE_ISSUED)
+    call(client.invoices, "retrieve", "inv x")
+    assert api.last.url.raw_path == b"/v1/invoices/inv%20x"
+
+
+def test_invoice_list(client: rayacash.RayaClient, api: MockAPI, call: Caller) -> None:
+    api.add(200, facturador.INVOICE_LIST)
+    page = call(
+        client.invoices,
+        "list",
+        cursor="c1",
+        limit=10,
+        created_lt="2026-11-19T00:00:00-03:00",
+        created_gte=datetime(2026, 11, 18, 3, tzinfo=timezone.utc),
+        status="issued",
+    )
+    assert type(page) is rayacash.ListObject
+    assert [type(invoice) for invoice in page] == [rayacash.Invoice] * 2
+    assert [invoice.number for invoice in page] == [1234, 1233]  # de la más nueva a la más vieja
+    assert page.has_more is False
+    assert page.next_cursor is None
+    request = api.last
+    assert (request.method, request.url.path) == ("GET", "/v1/invoices")
+    # La query exacta: en el orden de la API, y el datetime en ISO 8601 con su zona.
+    assert request.url.query == (
+        b"status=issued&created_gte=2026-11-18T03%3A00%3A00%2B00%3A00"
+        b"&created_lt=2026-11-19T00%3A00%3A00-03%3A00&limit=10&cursor=c1"
+    )
+    assert request.content == b""
+    assert "idempotency-key" not in request.headers
+
+
+def test_invoice_list_without_filters(client: rayacash.RayaClient, api: MockAPI) -> None:
+    api.add(200, facturador.INVOICE_LIST)
+    client.invoices.list()
+    assert str(api.last.url) == INVOICES_URL
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "error", "message"),
+    [
+        ({"created_gte": datetime(2026, 11, 18)}, ValueError, "^created_gte necesita zona"),
+        ({"created_lt": datetime(2026, 11, 19)}, ValueError, "^created_lt necesita zona"),
+        ({"status": True}, TypeError, "^status no puede ser un bool"),
+        ({"status": ["issued", "failed"]}, TypeError, "^status no acepta un list"),
+        ({"limit": 1.5}, TypeError, "^limit no acepta un float"),
+        # Sin filtro por DNI (sería un dato personal en la URL), ni por tipo o punto de venta.
+        ({"dni": facturador.DNI}, TypeError, "dni"),
+        ({"type": "B"}, TypeError, "type"),
+        ({"point_of_sale": 5}, TypeError, "point_of_sale"),
+    ],
+)
+def test_invoice_list_rejects_bad_filters_before_sending(
+    client: rayacash.RayaClient,
+    api: MockAPI,
+    call: Caller,
+    kwargs: dict[str, object],
+    error: type[Exception],
+    message: str,
+) -> None:
+    with pytest.raises(error, match=message):
+        call(client.invoices, "list", **kwargs)
+    assert api.requests == []
+
+
+def test_invoice_gets_take_no_idempotency_key(client: rayacash.RayaClient, api: MockAPI) -> None:
+    invoices: Any = client.invoices  # llamadas que el type checker ya rechaza
+    with pytest.raises(TypeError, match="idempotency_key"):
+        invoices.retrieve(facturador.INVOICE_ID, idempotency_key="k")
+    with pytest.raises(TypeError, match="idempotency_key"):
+        invoices.list(idempotency_key="k")
+    assert api.requests == []
+
+
+def test_invoice_options_per_call(
+    client: rayacash.RayaClient, api: MockAPI, sleeps: list[float]
+) -> None:
+    api.add_error(503, "TEMPORARILY_UNAVAILABLE", headers={"Retry-After": "5"})
+    with pytest.raises(rayacash.APIError) as info:
+        client.invoices.retrieve(
+            facturador.INVOICE_ID,
+            options={"api_key": OTHER_KEY, "timeout": 10, "max_network_retries": 0},
+        )
+    assert info.value.code == "TEMPORARILY_UNAVAILABLE"
+    assert api.last.headers["authorization"] == f"Bearer {OTHER_KEY}"
+    assert api.last.extensions["timeout"]["read"] == 10.0
+    assert len(api.requests) == 1
+    assert sleeps == []
+
+
+def test_invoice_api_unavailable_is_not_retried(
+    client: rayacash.RayaClient, api: MockAPI, call: Caller, sleeps: list[float]
+) -> None:
+    # El Facturador apagado responde 503 API_UNAVAILABLE: un interruptor, no un corte.
+    api.add_error(
+        503,
+        "API_UNAVAILABLE",
+        "La API no está disponible en este momento. Probá de nuevo más tarde.",
+    )
+    with pytest.raises(rayacash.APIError) as info:
+        call(client.invoices, "create", **INVOICE_PARAMS)
+    assert info.value.code == "API_UNAVAILABLE"
+    assert len(api.requests) == 1
+    assert sleeps == []
+
+
+def test_invoices_are_not_available_in_the_sandbox_yet(api: MockAPI, call: Caller) -> None:
+    # Una clave de prueba llega a la API, que responde 403: el Facturador emite facturas reales en
+    # ARCA y todavía no está disponible en el sandbox.
+    client = api.client(SANDBOX_KEY)
+    for method, args, kwargs in (
+        ("create", (), INVOICE_PARAMS),
+        ("retrieve", (facturador.INVOICE_ID,), {}),
+        ("list", (), {}),
+    ):
+        api.add_error(
+            403, "SANDBOX_NOT_SUPPORTED", "Este endpoint todavía no está disponible en un sandbox."
+        )
+        with pytest.raises(rayacash.PermissionDeniedError) as info:
+            call(client.invoices, method, *args, **kwargs)
+        assert info.value.code == "SANDBOX_NOT_SUPPORTED"
+        assert api.last.headers["authorization"] == f"Bearer {SANDBOX_KEY}"
+    assert len(api.requests) == 3

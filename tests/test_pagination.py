@@ -6,6 +6,7 @@ from typing import Any
 import pytest
 
 import rayacash
+from tests import fixtures_facturador as facturador
 from tests import fixtures_psp as psp
 from tests.fixtures import transfer_page
 from tests.fixtures_apps import PAYOUT_COMPLETED
@@ -323,4 +324,80 @@ def test_psp_global_auto_paging(api: MockAPI) -> None:
     api.add(200, psp.transfer_page(["t2"], next_cursor=None))
     transfers = rayacash.PspTransfer.list(customer=psp.CUSTOMER_ID)
     assert [transfer.id for transfer in transfers.auto_paging_iter()] == ["t1", "t2"]
+    assert {r.headers["authorization"] for r in api.requests} == {f"Bearer {TEST_KEY}"}
+
+
+# --- Facturador: invoices.list -------------------------------------------------------------------
+
+
+def queue_three_invoice_pages(api: MockAPI) -> None:
+    api.add(200, facturador.invoice_page(["i1", "i2"], next_cursor="k1"))
+    api.add(200, facturador.invoice_page(["i3", "i4"], next_cursor="k2"))
+    api.add(200, facturador.invoice_page(["i5"], next_cursor=None))
+
+
+def test_invoices_auto_paging(client: rayacash.RayaClient, api: MockAPI) -> None:
+    queue_three_invoice_pages(api)
+    page = client.invoices.list(
+        status="issued",
+        created_gte="2026-11-01T00:00:00-03:00",
+        limit=2,
+        options={"api_key": OTHER_KEY},
+    )
+    invoices = list(page.auto_paging_iter())
+    assert [invoice.id for invoice in invoices] == ["i1", "i2", "i3", "i4", "i5"]
+    assert all(type(invoice) is rayacash.Invoice for invoice in invoices)
+    assert len(api.requests) == 3  # al llegar al final no pide otra página
+    filters = {"status": "issued", "created_gte": "2026-11-01T00:00:00-03:00", "limit": "2"}
+    assert [dict(r.url.params) for r in api.requests] == [
+        filters,
+        {**filters, "cursor": "k1"},
+        {**filters, "cursor": "k2"},
+    ]
+    assert {r.url.path for r in api.requests} == {"/v1/invoices"}
+    # Las opciones de la primera request también viajan en las siguientes.
+    assert {r.headers["authorization"] for r in api.requests} == {f"Bearer {OTHER_KEY}"}
+
+
+def test_invoices_async_auto_paging(client: rayacash.RayaClient, api: MockAPI) -> None:
+    queue_three_invoice_pages(api)
+
+    async def collect() -> list[str]:
+        page = await client.invoices.list_async(status="failed")
+        return [invoice.id async for invoice in page.auto_paging_iter()]
+
+    assert asyncio.run(collect()) == ["i1", "i2", "i3", "i4", "i5"]
+    assert [dict(r.url.params) for r in api.requests][1:] == [
+        {"status": "failed", "cursor": "k1"},
+        {"status": "failed", "cursor": "k2"},
+    ]
+
+
+def test_invoices_paging_can_stop_halfway(client: rayacash.RayaClient, api: MockAPI) -> None:
+    queue_three_invoice_pages(api)
+    ids: list[str] = []
+    for invoice in client.invoices.list().auto_paging_iter():
+        ids.append(invoice.id)
+        if len(ids) == 3:
+            break
+    assert ids == ["i1", "i2", "i3"]
+    assert len(api.requests) == 2
+    assert api.pending == 1
+
+
+def test_invoices_next_page_on_the_last_page(client: rayacash.RayaClient, api: MockAPI) -> None:
+    api.add(200, facturador.invoice_page(["i1"], next_cursor=None))
+    page = client.invoices.list(status="pending")
+    assert page.next_page().data == []
+    assert asyncio.run(page.next_page_async()).data == []
+    assert len(api.requests) == 1
+
+
+def test_invoices_global_auto_paging(api: MockAPI) -> None:
+    rayacash.api_key = TEST_KEY
+    rayacash.http_client = api.sync_client()
+    queue_three_invoice_pages(api)
+    page = rayacash.Invoice.list(limit=2)
+    assert [invoice.id for invoice in page.auto_paging_iter()] == ["i1", "i2", "i3", "i4", "i5"]
+    assert [r.url.params.get("cursor") for r in api.requests] == [None, "k1", "k2"]
     assert {r.headers["authorization"] for r in api.requests} == {f"Bearer {TEST_KEY}"}

@@ -14,6 +14,7 @@ from typing_extensions import Literal, assert_type
 
 import rayacash
 from rayacash._identity_verification_service import IdentityService, IdentityVerificationService
+from rayacash._invoice_service import InvoiceService
 from rayacash._psp_service import (
     PspBalanceService,
     PspCustomerService,
@@ -59,6 +60,7 @@ def client_style(client: rayacash.RayaClient) -> None:
             rayacash.Payment,
             rayacash.ConnectOrder,
             rayacash.IdentityVerification,
+            rayacash.Invoice,
             rayacash.PspCustomer,
             rayacash.PspTransfer,
             rayacash.PspDocumentRequest,
@@ -591,6 +593,120 @@ async def psp_create_forms_that_do_not_type(client: rayacash.RayaClient) -> None
     await customers.create_async(identity_verification="idv_x", name="y")  # type: ignore[call-overload]
     rayacash.PspCustomer.create(identity_verification="idv_x", person_type="F")  # type: ignore[call-overload]
     await rayacash.PspCustomer.create_async(tax_id="x", name="y")  # type: ignore[call-overload]
+
+
+def facturador_style(client: rayacash.RayaClient, event: rayacash.Event) -> None:
+    # El servicio tiene nombre, aunque (como los demás) no se exporta desde rayacash.
+    assert_type(client.invoices, InvoiceService)
+
+    invoice = client.invoices.create(
+        dni="12345678",
+        amount=Decimal("15000.50"),
+        metadata={"pedido": "1042"},
+        idempotency_key="k",
+    )
+    assert_type(invoice, rayacash.Invoice)
+    assert_type(invoice.id, str)
+    assert_type(invoice.object, Literal["invoice"])
+    assert_type(invoice.type, rayacash.InvoiceType)
+    assert_type(invoice.type, Literal["B", "C"])
+    assert_type(invoice.status, rayacash.InvoiceStatus)
+    assert_type(invoice.amount, float)
+    assert_type(invoice.net_amount, float)
+    assert_type(invoice.vat_amount, Optional[float])
+    assert_type(invoice.currency, str)
+    assert_type(invoice.dni, str)
+    assert_type(invoice.point_of_sale, int)
+    assert_type(invoice.number, Optional[int])
+    assert_type(invoice.concept, rayacash.InvoiceConcept)
+    assert_type(invoice.cae, Optional[str])
+    assert_type(invoice.cae_expires_on, Optional[str])
+    assert_type(invoice.issued_on, Optional[str])
+    assert_type(invoice.failure_reason, Optional[rayacash.Invoice.FailureReason])
+    if invoice.failure_reason is not None:
+        assert_type(invoice.failure_reason.code, rayacash.InvoiceFailureCode)
+        assert_type(invoice.failure_reason.message, str)
+    assert_type(invoice.arca_messages, list[rayacash.Invoice.ArcaMessage])
+    for message in invoice.arca_messages:
+        assert_type(message.type, rayacash.InvoiceArcaMessageType)
+        assert_type(message.code, int)
+        assert_type(message.message, str)
+    assert_type(invoice.metadata, dict[str, str])
+    assert_type(invoice.issued_at, Optional[str])
+    assert_type(invoice.created_at, str)
+
+    assert_type(
+        client.invoices.create(dni="12345678", amount=15000, idempotency_key="k"),
+        rayacash.Invoice,
+    )
+    assert_type(client.invoices.retrieve("inv_x"), rayacash.Invoice)
+    assert_type(client.invoices.retrieve("inv_x", options={"timeout": 10}), rayacash.Invoice)
+    page = client.invoices.list(
+        status="issued",
+        created_gte=datetime(2026, 11, 1, tzinfo=timezone.utc),
+        created_lt="2026-12-01T00:00:00-03:00",
+        limit=100,
+        cursor="c",
+    )
+    assert_type(page, rayacash.ListObject[rayacash.Invoice])
+    assert_type(page.data, list[rayacash.Invoice])
+    for item in page.auto_paging_iter():
+        assert_type(item, rayacash.Invoice)
+
+    if event.type == "invoice.issued" and isinstance(event.data.object, rayacash.Invoice):
+        assert_type(event.data.object.cae, Optional[str])
+    if event.type in ("invoice.rejected", "invoice.failed"):
+        assert_type(event.type, Literal["invoice.rejected", "invoice.failed"])
+
+
+async def facturador_async_style(client: rayacash.RayaClient) -> None:
+    invoices = client.invoices
+    assert_type(
+        await invoices.create_async(dni="12345678", amount="15000.50", idempotency_key="k"),
+        rayacash.Invoice,
+    )
+    assert_type(await invoices.retrieve_async("inv_x"), rayacash.Invoice)
+    page = await invoices.list_async(status="pending")
+    assert_type(page, rayacash.ListObject[rayacash.Invoice])
+    async for item in page.auto_paging_iter():
+        assert_type(item, rayacash.Invoice)
+    assert_type(await page.next_page_async(), rayacash.ListObject[rayacash.Invoice])
+
+
+def facturador_global_style() -> None:
+    invoice = rayacash.Invoice.create(
+        dni="12345678", amount=15000, metadata={"pedido": "1042"}, idempotency_key="k"
+    )
+    assert_type(invoice, rayacash.Invoice)
+    assert_type(rayacash.Invoice.retrieve("inv_x"), rayacash.Invoice)
+    assert_type(
+        rayacash.Invoice.list(status="rejected", limit=10), rayacash.ListObject[rayacash.Invoice]
+    )
+    assert_type(rayacash.Invoice.construct_from({"object": "invoice"}), rayacash.Invoice)
+
+
+async def facturador_global_async_style() -> None:
+    invoice = rayacash.Invoice
+    assert_type(
+        await invoice.create_async(dni="12345678", amount=1, idempotency_key="k"),
+        rayacash.Invoice,
+    )
+    assert_type(await invoice.retrieve_async("inv_x"), rayacash.Invoice)
+    assert_type(await invoice.list_async(), rayacash.ListObject[rayacash.Invoice])
+
+
+async def facturador_calls_that_do_not_type(client: rayacash.RayaClient) -> None:
+    # Lo que nunca puede andar no tipa: sin idempotency_key (es obligatoria), un dni que no es un
+    # str, un estado que no existe o un parámetro que configurás en el dashboard. mypy exige que
+    # cada ignore haga falta (warn_unused_ignores, de --strict).
+    invoices = client.invoices
+    invoices.create(dni="12345678", amount=15000)  # type: ignore[call-arg]
+    invoices.create(dni=12345678, amount=15000, idempotency_key="k")  # type: ignore[arg-type]
+    invoices.create(dni="12345678", amount=15000, idempotency_key="k", type="B")  # type: ignore[call-arg]
+    invoices.list(status="voided")  # type: ignore[arg-type]
+    invoices.list(dni="12345678")  # type: ignore[call-arg]
+    await invoices.create_async(dni="12345678", amount=1)  # type: ignore[call-arg]
+    rayacash.Invoice.create(dni="12345678", amount=15000)  # type: ignore[call-arg]
 
 
 def sandbox_style(client: rayacash.RayaClient, event: rayacash.Event) -> None:
