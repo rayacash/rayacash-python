@@ -2,6 +2,21 @@
 
 Los cambios de cada versión de `rayacash` publicada en [PyPI](https://pypi.org/project/rayacash/). Sigue [semver](https://semver.org/lang/es/): los cambios incompatibles solo llegan en una versión mayor (`2.0.0`), y los anotamos acá.
 
+## 1.4.0
+
+Facturador: emití facturas electrónicas de ARCA a tu nombre desde tu sistema, con el DNI de quien te compra y el monto (con el Facturador configurado en Negocios › Facturador, en el dashboard).
+
+- `client.invoices.create(dni=, amount=, metadata=, idempotency_key=)` (`POST /v1/invoices`) crea una factura y responde enseguida (`202`) con `status` en `pending`: la emitimos en ARCA en segundo plano y te avisamos el resultado con los webhooks `invoice.*`. Es una Factura B (con el IVA del 21 % incluido en `amount`) si sos Responsable Inscripto o una Factura C (sin IVA) si sos monotributista, a un consumidor final identificado por su DNI; el tipo, el punto de venta y el concepto salen de lo que configuraste en el dashboard. La `idempotency_key` es obligatoria, como en `transfers.create`: sin ella, `TypeError` sin mandar nada. El body va en el orden de la API (`dni`, `amount` y `metadata`) y solo con lo que pasaste.
+- `client.invoices.retrieve(invoice_id)` y `list(status=, created_gte=, created_lt=, limit=, cursor=)` (`GET /v1/invoices/:id` y `/v1/invoices`): una factura (cuando está `issued`, con `number`, `cae`, `cae_expires_on` e `issued_on`) y tus facturas, de la más nueva a la más vieja (con `auto_paging_iter()`). La lista no filtra por DNI.
+- Cada método tiene su `*_async`. En el estilo global, `rayacash.Invoice.create/retrieve/list(...)`.
+- Objeto nuevo, registrado por su `object`: `Invoice` (`"invoice"`, 20 claves, con `Invoice.FailureReason` y `Invoice.ArcaMessage`; `metadata` como dict común; `vat_amount` es `None` en una Factura C). Se exporta desde `rayacash`, con los `Literal` `InvoiceType` (`B` o `C`), `InvoiceStatus` (`pending`, `issued`, `rejected` o `failed`), `InvoiceConcept`, `InvoiceFailureCode` (los 5 de `failure_reason.code`) e `InvoiceArcaMessageType`. El servicio de `client.invoices`, como los demás, no se exporta.
+- Lo que nunca puede andar falla sin mandar nada: `dni` tiene que ser un `str` (el DNI como texto, no un número) y `metadata`, un dict (si no, `TypeError`); `amount` acepta lo mismo que en `transfers.create`. Los dígitos del DNI los valida la API: `InvalidRequestError` con `PARAMETER_INVALID` y `error.param == "dni"`.
+- 3 eventos en `EventType`, entre los `identity.verification.*` y los `psp.*`: `invoice.issued`, `invoice.rejected` e `invoice.failed`; `event.data.object` puede ser una `Invoice`.
+- 2 códigos de error nuevos (60 en total), con la clase que les toca por status: `FACTURADOR_NOT_READY` (403, `PermissionDeniedError`, con el motivo en `error.data["reason"]`: `not_configured`, `checking`, `action_required`, `certificate_expired` o `disabled`) e `INVOICE_NOT_FOUND` (404, `NotFoundError`). Ninguno se reintenta.
+- El Facturador va con tu clave secreta y solo en tu cuenta real: con la clave de prueba de un sandbox responde `PermissionDeniedError` con `SANDBOX_NOT_SUPPORTED`.
+- Docs: el README suma la sección «Facturador» (configurarlo en el dashboard, crear la factura, el webhook, `retrieve`, listar, los estados, `failure_reason.code`, los motivos de `FACTURADOR_NOT_READY` y la tabla de métodos), los eventos `invoice.*` en «Webhooks», los códigos nuevos en la tabla de errores, `invoices.create` en «Idempotencia» y el Facturador en lo que todavía no está disponible en el sandbox, y está el ejemplo `examples/emitir_facturas.py`. La descripción del paquete en PyPI nombra el Facturador.
+- Sin cambios incompatibles: lo de la 1.3.0 sigue igual.
+
 ## 1.3.0
 
 Raya PSP: creá clientes con un CVU a su nombre, leé su saldo, bloquealos, dales de baja el CVU o recrealo, y transferí en su nombre (solo cuentas de empresa con Raya PSP activado).

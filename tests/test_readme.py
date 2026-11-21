@@ -8,6 +8,8 @@ from pathlib import Path
 
 import pytest
 
+from tests import fixtures_facturador as facturador
+
 ROOT = Path(__file__).resolve().parent.parent
 README = (ROOT / "README.md").read_text(encoding="utf-8")
 BLOCKS = re.findall(r"```python\n(.*?)```", README, flags=re.DOTALL)
@@ -161,15 +163,19 @@ PSP_EVENT_TYPES = (
 
 
 def test_the_readme_covers_raya_psp() -> None:
-    # Va entre «Identidad» y «Errores», con su entrada en el índice.
+    # Va entre «Identidad» y «Facturador», con su entrada en el índice.
     contents = README[README.index("## Contenido\n") : README.index("## Antes de empezar\n")]
-    assert "- [Identidad](#identidad)\n- [Raya PSP](#raya-psp)\n- [Errores](#errores)\n" in contents
+    assert (
+        "- [Identidad](#identidad)\n- [Raya PSP](#raya-psp)\n- [Facturador](#facturador)\n"
+        "- [Errores](#errores)\n"
+    ) in contents
     assert (
         README.index("\n## Identidad\n")
         < README.index("\n## Raya PSP\n")
+        < README.index("\n## Facturador\n")
         < README.index("\n## Errores\n")
     )
-    psp = README[README.index("## Raya PSP\n") : README.index("## Errores\n")]
+    psp = README[README.index("## Raya PSP\n") : README.index("## Facturador\n")]
     assert "https://raya.cash/api/psp" in psp
     assert "`client.psp` existe desde la 1.3.0." in psp
     # El flujo, en orden: crear → activated → retrieve → transferir → received → bloquear → listar.
@@ -234,7 +240,7 @@ def test_the_readme_covers_raya_psp() -> None:
 def test_the_readme_creates_psp_customers_in_three_forms() -> None:
     # Enmienda A7: con Identidad alcanza identity_verification; sin ella, los datos (y las fotos de
     # una persona humana). Sin gender en ningún lado: el sexo sale de la verificación o del DNI.
-    psp = README[README.index("## Raya PSP\n") : README.index("## Errores\n")]
+    psp = README[README.index("## Raya PSP\n") : README.index("## Facturador\n")]
     first = next(block for block in BLOCKS if "psp.customers.create(" in block)
     call = first[first.index("psp.customers.create(") : first.index("\n)\n")]
     assert 'identity_verification="idv_' in call
@@ -266,6 +272,94 @@ def test_the_readme_creates_psp_customers_in_three_forms() -> None:
         assert "`tax_id` o `name`" not in section
     assert "`CUSTOMER_DATA_MISMATCH` (solo una persona jurídica" in psp
     assert "`CUSTOMER_DATA_MISMATCH`: la razón social de una persona jurídica" in errors
+
+
+FACTURADOR_ERROR_CODES = ("FACTURADOR_NOT_READY", "INVOICE_NOT_FOUND")
+INVOICE_EVENT_TYPES = ("invoice.issued", "invoice.rejected", "invoice.failed")
+
+
+def test_the_readme_covers_the_facturador() -> None:
+    # Va entre «Raya PSP» y «Errores», con su entrada en el índice.
+    contents = README[README.index("## Contenido\n") : README.index("## Antes de empezar\n")]
+    assert (
+        "- [Raya PSP](#raya-psp)\n- [Facturador](#facturador)\n- [Errores](#errores)\n"
+    ) in contents
+    assert (
+        README.index("\n## Raya PSP\n")
+        < README.index("\n## Facturador\n")
+        < README.index("\n## Errores\n")
+    )
+    section = README[README.index("## Facturador\n") : README.index("## Errores\n")]
+    assert "https://raya.cash/api/invoices" in section
+    assert "`client.invoices` existe desde la 1.4.0." in section
+    # El flujo, en orden: configurar en el dashboard → crear (202 pending) → invoice.issued →
+    # retrieve → listar.
+    flow = [
+        "**1. Configuralo en el dashboard.**",
+        "invoices.create(",
+        "`invoice.issued`",
+        "invoices.retrieve(",
+        "invoices.list(",
+    ]
+    positions = [section.index(step) for step in flow]
+    assert positions == sorted(positions)
+    for step in ("invoices.create(", "invoices.retrieve(", "invoices.list("):
+        assert any(step in block for block in BLOCKS), step
+    # Lo que se configura en Negocios › Facturador (y no viaja por la API), el 202, la clave
+    # obligatoria, FACTURADOR_NOT_READY y que es solo para la cuenta real.
+    for text in (
+        "[Negocios › Facturador](https://raya.cash/dashboard/invoicing)",
+        "tu punto de venta, el certificado y la clave privada de ARCA",
+        "tu condición frente al IVA",
+        "el concepto",
+        "`202`",
+        '`"pending"`',
+        "`idempotency_key` es obligatoria",
+        'code == "FACTURADOR_NOT_READY"',
+        '`error.data["reason"]`',
+        "`SANDBOX_NOT_SUPPORTED`",
+        "Si no aparece, tu cuenta todavía no lo tiene.",
+    ):
+        assert text in section, text
+    for reason in facturador.NOT_READY_REASONS:
+        assert f"| `{reason}` |" in section, reason
+    # failure_reason.code, con los mensajes literales de la API.
+    for code, message in facturador.FAILURE_MESSAGES.items():
+        assert f"| `{code}` | {message} |" in section, code
+    # La tabla con los 3 métodos: create con la clave obligatoria (sin valor por defecto).
+    for row in (
+        "| `client.invoices.create(*, dni, amount, metadata=None, idempotency_key, options=None)` "
+        "| `POST /v1/invoices` |",
+        "| `client.invoices.retrieve(invoice_id, *, options=None)` | `GET /v1/invoices/:id` |",
+        "| `client.invoices.list(*, status=None, created_gte=None, created_lt=None, limit=None, "
+        "cursor=None, options=None)` | `GET /v1/invoices` |",
+    ):
+        assert row in section, row
+    # Los códigos, en la sección y en la tabla de errores; los eventos, en Webhooks.
+    errors = README[README.index("## Errores\n") : README.index("## Webhooks\n")]
+    for code in FACTURADOR_ERROR_CODES:
+        assert f"`{code}`" in section, code
+        assert f"`{code}`" in errors, code
+    webhooks = README[README.index("## Webhooks\n") : README.index("## Sandbox\n")]
+    for event_type in INVOICE_EVENT_TYPES:
+        assert f"`{event_type}`" in section, event_type
+        assert f"`{event_type}`" in webhooks, event_type
+    assert "en el grupo «Facturador»" in webhooks
+    # Idempotencia: invoices.create exige la clave. Sandbox: todavía no está.
+    idempotency = README[
+        README.index("## Idempotencia\n") : README.index("## Reintentos y timeouts\n")
+    ]
+    assert "`psp.transfers.create` e `invoices.create` exigen `idempotency_key`" in idempotency
+    sandbox = README[
+        README.index("\n## Sandbox\n") : README.index("\n## Tests de tu integración\n")
+    ]
+    assert "el Facturador (`client.invoices`)" in sandbox
+    # Los ejemplos crean con dni como texto y nunca filtran la lista por DNI (un dato personal).
+    create = next(block for block in BLOCKS if "invoices.create(" in block)
+    assert 'dni="12345678"' in create
+    assert "dni=" not in next(block for block in BLOCKS if "invoices.list(" in block)
+    # Sin precios.
+    assert not re.search(r"\$\s?\d|\bARS\s?\d|\bUSD\s?\d", section)
 
 
 def test_the_readme_covers_the_sandbox() -> None:

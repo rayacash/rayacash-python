@@ -8,6 +8,7 @@ from rayacash._connect_payout import ConnectPayout
 from rayacash._event import Event
 from rayacash._identity_verification import IdentityVerification
 from rayacash._identity_verification_files import IdentityVerificationFiles
+from rayacash._invoice import Invoice
 from rayacash._list_object import ListObject
 from rayacash._oauth import OAuthToken
 from rayacash._payment import Payment
@@ -32,6 +33,7 @@ OBJECT_CLASSES: dict[str, type[RayaObject]] = {
     "event": Event,
     "identity.verification": IdentityVerification,
     "identity.verification_files": IdentityVerificationFiles,
+    "invoice": Invoice,
     "list": ListObject,
     "oauth_token": OAuthToken,
     "payment": Payment,

@@ -9,18 +9,22 @@ import pytest
 
 import rayacash
 from rayacash._error import error_from_response
+from tests import fixtures_facturador as facturador
 from tests import fixtures_psp as psp
 
-# Los 58 códigos del contrato (api.md › Códigos de error, los mismos que fija
-# publicapi/tests_catalog.py de la API): los 32 de siempre, los 11 de Raya Connect (apps y cuentas
+# Los 60 códigos del contrato (api.md › Códigos de error), en el orden de
+# publicapi/tests_catalog.py de la API: los 32 de siempre, los 11 de Raya Connect (apps y cuentas
 # conectadas), los 2 de los payouts, los 4 de Identidad (con SANDBOX_NOT_SUPPORTED, el 403 de una
-# credencial de prueba en un endpoint que todavía no está disponible en el sandbox, e
-# IDENTITY_NOT_ACTIVATED, al final de los 403), los 2 del helper del sandbox (SANDBOX_ONLY, después
-# de SANDBOX_NOT_SUPPORTED, y PAYMENT_NOT_PENDING, después de PAYMENT_NOT_REFUNDABLE) y los 7 de
-# Raya PSP, cada uno al final de su bloque de HTTP: PSP_NOT_ACTIVATED (403), CUSTOMER_NOT_FOUND
-# (404), CUSTOMER_ALREADY_EXISTS y CUSTOMER_STATUS_CONFLICT (409), y
-# CUSTOMER_INSUFFICIENT_BALANCE, CUSTOMER_DATA_MISMATCH y TAX_ID_NOT_REGISTERED (422). El test no
-# mira el orden.
+# credencial de prueba en un endpoint que todavía no está disponible en el sandbox, después de
+# APP_DISABLED, e IDENTITY_NOT_ACTIVATED), los 2 del helper del sandbox (SANDBOX_ONLY, después de
+# SANDBOX_NOT_SUPPORTED y antes de PAYOUT_ORIGIN_UNAVAILABLE, y PAYMENT_NOT_PENDING, después de
+# PAYMENT_NOT_REFUNDABLE), los 7 de Raya PSP, cada uno al final de su bloque de HTTP:
+# PSP_NOT_ACTIVATED (403), CUSTOMER_NOT_FOUND (404), CUSTOMER_ALREADY_EXISTS y
+# CUSTOMER_STATUS_CONFLICT (409), y CUSTOMER_INSUFFICIENT_BALANCE, CUSTOMER_DATA_MISMATCH y
+# TAX_ID_NOT_REGISTERED (422), y los 2 del Facturador: FACTURADOR_NOT_READY (403), después de
+# PSP_NOT_ACTIVATED, e INVOICE_NOT_FOUND (404), después de CUSTOMER_NOT_FOUND. El mapeo a cada
+# clase no depende del orden; test_the_catalog_keeps_the_order_of_the_api fija los tramos que más
+# se tocaron, para que un código nuevo caiga en el mismo lugar en los tres SDKs.
 CATALOG: list[tuple[str, int, type[rayacash.RayaError]]] = [
     ("INVALID_JSON", 400, rayacash.InvalidRequestError),
     ("PARAMETER_MISSING", 400, rayacash.InvalidRequestError),
@@ -43,11 +47,12 @@ CATALOG: list[tuple[str, int, type[rayacash.RayaError]]] = [
     ("CONNECTED_ACCOUNT_LOCKED", 403, rayacash.PermissionDeniedError),
     ("CONNECTED_ACCOUNT_NOT_CONFIGURED", 403, rayacash.PermissionDeniedError),
     ("APP_DISABLED", 403, rayacash.PermissionDeniedError),
-    ("PAYOUT_ORIGIN_UNAVAILABLE", 403, rayacash.PermissionDeniedError),
     ("SANDBOX_NOT_SUPPORTED", 403, rayacash.PermissionDeniedError),
     ("SANDBOX_ONLY", 403, rayacash.PermissionDeniedError),
+    ("PAYOUT_ORIGIN_UNAVAILABLE", 403, rayacash.PermissionDeniedError),
     ("IDENTITY_NOT_ACTIVATED", 403, rayacash.PermissionDeniedError),
     ("PSP_NOT_ACTIVATED", 403, rayacash.PermissionDeniedError),
+    ("FACTURADOR_NOT_READY", 403, rayacash.PermissionDeniedError),
     ("TRANSFER_NOT_FOUND", 404, rayacash.NotFoundError),
     ("PAYMENT_NOT_FOUND", 404, rayacash.NotFoundError),
     ("NOT_FOUND", 404, rayacash.NotFoundError),
@@ -56,6 +61,7 @@ CATALOG: list[tuple[str, int, type[rayacash.RayaError]]] = [
     ("PAYOUT_NOT_FOUND", 404, rayacash.NotFoundError),
     ("VERIFICATION_NOT_FOUND", 404, rayacash.NotFoundError),
     ("CUSTOMER_NOT_FOUND", 404, rayacash.NotFoundError),
+    ("INVOICE_NOT_FOUND", 404, rayacash.NotFoundError),
     ("METHOD_NOT_ALLOWED", 405, rayacash.InvalidRequestError),
     ("IDEMPOTENCY_KEY_REUSED", 409, rayacash.IdempotencyError),
     ("IDEMPOTENCY_KEY_IN_USE", 409, rayacash.IdempotencyError),
@@ -98,9 +104,45 @@ def make_error(
     )
 
 
-def test_catalog_has_the_58_codes() -> None:
-    assert len({code for code, _, _ in CATALOG}) == 58
-    assert len(CATALOG) == 58
+def test_catalog_has_the_60_codes() -> None:
+    assert len({code for code, _, _ in CATALOG}) == 60
+    assert len(CATALOG) == 60
+
+
+def test_the_catalog_keeps_the_order_of_the_api() -> None:
+    # Cada código nuevo va en su lugar del catálogo de la API: los de Raya PSP al final de su bloque
+    # de HTTP y los del Facturador justo después del de Raya PSP de su mismo status.
+    codes = [code for code, _, _ in CATALOG]
+    assert codes.index("FACTURADOR_NOT_READY") == codes.index("PSP_NOT_ACTIVATED") + 1
+    assert codes.index("INVOICE_NOT_FOUND") == codes.index("CUSTOMER_NOT_FOUND") + 1
+
+    def run(first: str, length: int) -> list[str]:
+        start = codes.index(first)
+        return codes[start : start + length]
+
+    # Los tramos de publicapi/tests_catalog.py que más se tocaron, enteros.
+    assert run("APP_DISABLED", 7) == [
+        "APP_DISABLED",
+        "SANDBOX_NOT_SUPPORTED",
+        "SANDBOX_ONLY",
+        "PAYOUT_ORIGIN_UNAVAILABLE",
+        "IDENTITY_NOT_ACTIVATED",
+        "PSP_NOT_ACTIVATED",
+        "FACTURADOR_NOT_READY",
+    ]
+    assert run("TRANSFER_NOT_FOUND", 9) == [
+        "TRANSFER_NOT_FOUND",
+        "PAYMENT_NOT_FOUND",
+        "NOT_FOUND",
+        "USER_NOT_FOUND",
+        "ORDER_NOT_FOUND",
+        "PAYOUT_NOT_FOUND",
+        "VERIFICATION_NOT_FOUND",
+        "CUSTOMER_NOT_FOUND",
+        "INVOICE_NOT_FOUND",
+    ]
+    statuses = [status for _, status, _ in CATALOG]
+    assert statuses == sorted(statuses)
 
 
 @pytest.mark.parametrize(("code", "status", "cls"), CATALOG)
@@ -288,6 +330,58 @@ def test_the_psp_codes_keep_their_message_and_data(
     assert error.data == data
     if isinstance(error, rayacash.InvalidRequestError):
         assert error.param == (data or {}).get("field")
+
+
+# Los 2 del Facturador, con su status, su data y el mensaje literal de la API: data.reason dice por
+# qué el Facturador no está listo.
+FACTURADOR_CODES: list[tuple[str, int, Any, type[rayacash.RayaError]]] = [
+    *(
+        ("FACTURADOR_NOT_READY", 403, {"reason": reason}, rayacash.PermissionDeniedError)
+        for reason in facturador.NOT_READY_REASONS
+    ),
+    ("INVOICE_NOT_FOUND", 404, None, rayacash.NotFoundError),
+]
+
+
+def test_the_facturador_codes_are_in_the_catalog() -> None:
+    assert {code for code, _, _, _ in FACTURADOR_CODES} == set(facturador.ERROR_MESSAGES)
+    catalog = {code: (status, cls) for code, status, cls in CATALOG}
+    for code, status, _, cls in FACTURADOR_CODES:
+        assert catalog[code] == (status, cls), code
+
+
+@pytest.mark.parametrize(("code", "status", "data", "cls"), FACTURADOR_CODES)
+def test_the_facturador_codes_keep_their_message_and_data(
+    code: str, status: int, data: Any, cls: type[rayacash.RayaError]
+) -> None:
+    message = facturador.ERROR_MESSAGES[code]
+    error = make_error(status, {"error": {"code": code, "message": message, "data": data}})
+    assert type(error) is cls
+    assert error.code == code
+    assert error.message == message
+    assert error.data == data
+    if code == "FACTURADOR_NOT_READY":
+        assert error.data is not None
+        assert error.data["reason"] in facturador.NOT_READY_REASONS
+    else:
+        assert isinstance(error, rayacash.InvalidRequestError)  # NotFoundError lo es
+        assert error.param is None
+
+
+def test_an_unknown_not_ready_reason_passes() -> None:
+    # La API puede sumar motivos: el error es el mismo y el motivo llega tal cual.
+    error = make_error(
+        403,
+        {
+            "error": {
+                "code": "FACTURADOR_NOT_READY",
+                "message": facturador.ERROR_MESSAGES["FACTURADOR_NOT_READY"],
+                "data": {"reason": "nuevo_motivo"},
+            }
+        },
+    )
+    assert type(error) is rayacash.PermissionDeniedError
+    assert error.data == {"reason": "nuevo_motivo"}
 
 
 @pytest.mark.parametrize(

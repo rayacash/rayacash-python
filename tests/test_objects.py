@@ -3,6 +3,8 @@ from __future__ import annotations
 import copy
 import json
 import pickle
+import re
+from decimal import ROUND_HALF_EVEN, Decimal
 from typing import Any
 
 import pytest
@@ -10,6 +12,7 @@ import pytest
 import rayacash
 from rayacash._object_classes import OBJECT_CLASSES
 from rayacash._raya_object import convert_to_raya_object
+from tests import fixtures_facturador as facturador
 from tests import fixtures_psp as psp
 from tests.fixtures import (
     EVENT_PAYMENT_SUCCEEDED,
@@ -750,4 +753,186 @@ def test_event_hydrates_psp_objects(event: dict[str, Any], cls: type[rayacash.Ra
     hydrated = rayacash.Event.construct_from(event)
     assert hydrated.type == event["type"]
     assert type(hydrated.data.object) is cls
+    assert hydrated.to_dict() == event
+
+
+# --- Facturador: Invoice --------------------------------------------------------------------------
+
+# Las 20 claves de una factura, en el orden de la API (serializers.invoice_object, el mismo objeto
+# en el GET, en la lista y en los eventos).
+INVOICE_KEYS = [
+    "id",
+    "object",
+    "type",
+    "status",
+    "amount",
+    "net_amount",
+    "vat_amount",
+    "currency",
+    "dni",
+    "point_of_sale",
+    "number",
+    "concept",
+    "cae",
+    "cae_expires_on",
+    "issued_on",
+    "failure_reason",
+    "arca_messages",
+    "metadata",
+    "issued_at",
+    "created_at",
+]
+
+
+def test_invoice_is_registered_by_its_object_name() -> None:
+    assert OBJECT_CLASSES["invoice"] is rayacash.Invoice
+    assert rayacash.Invoice.OBJECT_NAME == "invoice"
+    assert type(convert_to_raya_object({"object": "invoice"})) is rayacash.Invoice
+    assert type(convert_to_raya_object({"object": "invoices"})) is rayacash.RayaObject
+
+
+def test_invoice_annotates_the_fields_of_the_api_in_order() -> None:
+    assert fields_of(rayacash.Invoice) == INVOICE_KEYS
+    assert len(INVOICE_KEYS) == 20
+    assert fields_of(rayacash.Invoice.FailureReason) == ["code", "message"]
+    assert fields_of(rayacash.Invoice.ArcaMessage) == ["type", "code", "message"]
+    for fixture in (
+        facturador.INVOICE_PENDING,
+        facturador.INVOICE_ISSUED,
+        facturador.INVOICE_REJECTED,
+        facturador.INVOICE_FAILED,
+        facturador.INVOICE_C_ISSUED,
+    ):
+        assert list(fixture) == INVOICE_KEYS
+
+
+def test_invoice_ids_and_amounts_of_the_fixtures() -> None:
+    # Ids inv_ con 24 letras o números, y en la Factura B el neto más el IVA da el total exacto:
+    # neto = total / 1.21 redondeado a centavos (mitad a par), IVA = total - neto.
+    for fixture in (facturador.INVOICE_ISSUED, facturador.INVOICE_PREVIOUS):
+        assert re.fullmatch(r"inv_[0-9A-Za-z]{24}", fixture["id"])
+        amount = Decimal(str(fixture["amount"]))
+        net = (amount / Decimal("1.21")).quantize(Decimal("0.01"), rounding=ROUND_HALF_EVEN)
+        assert Decimal(str(fixture["net_amount"])) == net
+        assert Decimal(str(fixture["vat_amount"])) == amount - net
+    assert re.fullmatch(r"\d{14}", facturador.CAE)
+    assert facturador.DNI_PATTERN.fullmatch(facturador.DNI)
+
+
+def test_invoice_nested_objects() -> None:
+    invoice = convert_to_raya_object(facturador.INVOICE_ISSUED)
+    assert type(invoice) is rayacash.Invoice
+    assert invoice.object == "invoice"
+    assert invoice.id == facturador.INVOICE_ID
+    assert (invoice.type, invoice.status, invoice.concept) == ("B", "issued", "products")
+    assert (invoice.point_of_sale, invoice.number, invoice.cae) == (5, 1234, facturador.CAE)
+    assert invoice.failure_reason is None
+    assert invoice.arca_messages == []
+    assert type(invoice.metadata) is dict  # dict común: las claves son tuyas
+    assert isinstance(invoice.vat_amount, float)
+    assert repr(invoice).startswith(f"<Invoice invoice id={facturador.INVOICE_ID} at 0x")
+
+    rejected = convert_to_raya_object(facturador.INVOICE_REJECTED)
+    assert type(rejected.failure_reason) is rayacash.Invoice.FailureReason
+    assert rejected.failure_reason.code == "arca_rejected"
+    assert type(rejected.arca_messages) is list
+    assert [type(message) for message in rejected.arca_messages] == [rayacash.Invoice.ArcaMessage]
+    assert rejected.arca_messages[0].type == "observation"
+    assert rejected.arca_messages[0].code == 10015
+
+    factura_c = convert_to_raya_object(facturador.INVOICE_C_ISSUED)
+    assert (factura_c.type, factura_c.vat_amount) == ("C", None)
+    assert factura_c.net_amount == factura_c.amount
+
+
+def test_invoice_issued_can_carry_arca_observations() -> None:
+    # ARCA puede autorizarla con observaciones: llegan en arca_messages, como las de un rechazo.
+    observation = {"type": "observation", "code": 10063, "message": "Observación de ARCA."}
+    invoice = convert_to_raya_object({**facturador.INVOICE_ISSUED, "arca_messages": [observation]})
+    assert invoice.status == "issued"
+    (message,) = invoice.arca_messages
+    assert type(message) is rayacash.Invoice.ArcaMessage
+    assert message.to_dict() == observation
+
+
+def test_invoice_values_stay_as_raw_json_in_their_order() -> None:
+    invoice = convert_to_raya_object(facturador.INVOICE_PENDING)
+    assert list(invoice) == INVOICE_KEYS
+    assert len(invoice) == 20
+    assert isinstance(invoice.amount, int)  # 15000, como vino
+    assert invoice.to_dict() == facturador.INVOICE_PENDING
+    rejected = convert_to_raya_object(facturador.INVOICE_REJECTED)
+    plain = rejected.to_dict()
+    assert type(plain["failure_reason"]) is dict
+    assert type(plain["arca_messages"][0]) is dict
+    assert json.loads(json.dumps(rejected)) == facturador.INVOICE_REJECTED
+    assert json.loads(str(rejected)) == facturador.INVOICE_REJECTED
+
+
+def test_invoice_metadata_keys_are_yours() -> None:
+    metadata = {"object": "invoice", "type": "x", "arca_messages": "y", "failure_reason": "z"}
+    invoice = convert_to_raya_object({**facturador.INVOICE_ISSUED, "metadata": metadata})
+    assert type(invoice.metadata) is dict
+    assert invoice.metadata == metadata
+
+
+def test_invoice_unknown_fields_and_values_pass() -> None:
+    data = {
+        **facturador.INVOICE_REJECTED,
+        "type": "A",
+        "status": "voided",
+        "nuevo_campo": {"a": 1},
+        "failure_reason": {"code": "nuevo_motivo", "message": "Otro motivo."},
+        "arca_messages": [{"type": "event", "code": 1, "message": "Otro tipo.", "extra": True}],
+    }
+    invoice = convert_to_raya_object(data)
+    assert (invoice.type, invoice.status) == ("A", "voided")
+    assert invoice["nuevo_campo"] == {"a": 1}
+    assert type(invoice.failure_reason) is rayacash.Invoice.FailureReason
+    assert invoice.failure_reason["code"] == "nuevo_motivo"  # un motivo que el SDK no conoce
+    assert type(invoice.arca_messages[0]) is rayacash.Invoice.ArcaMessage
+    assert invoice.arca_messages[0]["type"] == "event"
+    assert invoice.arca_messages[0]["extra"] is True
+    assert invoice.to_dict() == data
+
+
+def test_invoice_pickle_copy_and_deepcopy() -> None:
+    invoice = convert_to_raya_object(facturador.INVOICE_REJECTED)
+    restored = pickle.loads(pickle.dumps(invoice))
+    assert type(restored) is rayacash.Invoice
+    assert type(restored.failure_reason) is rayacash.Invoice.FailureReason
+    assert type(restored.arca_messages[0]) is rayacash.Invoice.ArcaMessage
+    assert restored == invoice
+    assert restored._requestor is None
+
+    issued = convert_to_raya_object(facturador.INVOICE_ISSUED)
+    deep = copy.deepcopy(issued)
+    assert type(deep) is rayacash.Invoice
+    deep.metadata["pedido"] = "otro"
+    assert issued.metadata["pedido"] == "1042"
+    assert type(copy.copy(issued)) is rayacash.Invoice
+
+
+def test_a_page_of_invoices() -> None:
+    page = convert_to_raya_object(facturador.INVOICE_LIST)
+    assert type(page) is rayacash.ListObject
+    assert [type(invoice) for invoice in page] == [rayacash.Invoice] * 2
+    assert json.loads(json.dumps(page)) == facturador.INVOICE_LIST
+
+
+@pytest.mark.parametrize(
+    "event",
+    [
+        facturador.EVENT_INVOICE_ISSUED,
+        facturador.EVENT_INVOICE_REJECTED,
+        facturador.EVENT_INVOICE_FAILED,
+    ],
+    ids=["issued", "rejected", "failed"],
+)
+def test_event_hydrates_an_invoice(event: dict[str, Any]) -> None:
+    hydrated = rayacash.Event.construct_from(event)
+    assert hydrated.type == event["type"]
+    invoice = hydrated.data.object
+    assert type(invoice) is rayacash.Invoice
+    assert invoice.status == event["type"].rsplit(".", 1)[1]
     assert hydrated.to_dict() == event

@@ -35,6 +35,11 @@ Raya PSP (cuentas con CVU a nombre de los clientes de tu empresa)::
         customer=customer.id, amount=18350.5, destination=cvu, idempotency_key=key
     )
 
+Facturador (facturas electrónicas que emitimos en ARCA a tu nombre, con tu clave secreta)::
+
+    invoice = client.invoices.create(dni="12345678", amount=15000, idempotency_key=key)
+    print(invoice.status)  # pending: el resultado llega con el webhook invoice.issued
+
 En un sandbox, con su clave secreta de prueba (raya_sk_test_…), sin mover plata::
 
     payment = client.payments.create(amount=15000)
@@ -58,8 +63,8 @@ __version__ = VERSION
 
 # --- Configuración del estilo global -------------------------------------------------------
 # Solo la usan rayacash.Balance / Transfer / Payment / OAuth / User / ConnectOrder /
-# ConnectPayout / IdentityVerification / PspCustomer / PspTransfer / PspBalance. Un RayaClient tiene
-# la suya, salvo el logging (log y RAYA_LOG), que vale para todo el proceso.
+# ConnectPayout / IdentityVerification / PspCustomer / PspTransfer / PspBalance / Invoice. Un
+# RayaClient tiene la suya, salvo el logging (log y RAYA_LOG), que vale para todo el proceso.
 
 #: Tu clave secreta (raya_sk_live_…) o el access_token de una cuenta conectada (raya_at_live_…);
 #: en un sandbox, sus pares de prueba (raya_sk_test_… o raya_at_test_…). Si es None, se lee de la
@@ -118,6 +123,14 @@ from rayacash._identity_verification import (  # noqa: E402
     IdentityVerificationType,
 )
 from rayacash._identity_verification_files import IdentityVerificationFiles  # noqa: E402
+from rayacash._invoice import (  # noqa: E402
+    Invoice,
+    InvoiceArcaMessageType,
+    InvoiceConcept,
+    InvoiceFailureCode,
+    InvoiceStatus,
+    InvoiceType,
+)
 from rayacash._list_object import AnyIterator, ListObject  # noqa: E402
 from rayacash._oauth import OAuth, OAuthToken  # noqa: E402
 from rayacash._payment import Payment, PaymentStatus  # noqa: E402
@@ -200,6 +213,12 @@ __all__ = [
     "IdentityVerificationStatus",
     "IdentityVerificationType",
     "InvalidRequestError",
+    "Invoice",
+    "InvoiceArcaMessageType",
+    "InvoiceConcept",
+    "InvoiceFailureCode",
+    "InvoiceStatus",
+    "InvoiceType",
     "ListObject",
     "NotFoundError",
     "OAuth",

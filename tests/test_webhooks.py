@@ -8,6 +8,7 @@ from typing_extensions import get_args
 
 import rayacash
 from rayacash import _webhook
+from tests import fixtures_facturador as facturador
 from tests import fixtures_psp as psp
 from tests.fixtures import (
     EVENT_PAYMENT_SUCCEEDED,
@@ -324,10 +325,74 @@ def test_event_type_lists_the_identity_events() -> None:
     assert [name for name in names if name.startswith("identity.")] == [
         name for name, _ in IDENTITY_EVENTS
     ]
-    # Antes de los psp.* (Raya PSP), de webhook.test y de los checkout.* legacy, que van al final.
+    # Antes de los invoice.* (Facturador), de los psp.* (Raya PSP), de webhook.test y de los
+    # checkout.* legacy, que van al final.
     canceled = names.index("identity.verification.canceled")
-    assert canceled + 1 == names.index("psp.customer.activated")
-    assert canceled < names.index("webhook.test")
+    assert canceled + 1 == names.index("invoice.issued")
+    assert canceled < names.index("psp.customer.activated") < names.index("webhook.test")
+
+
+# --- Facturador: los eventos invoice.* ----------------------------------------------------------
+
+# Los 3 tipos, en el orden del catálogo de la API (webhooks/events.py, grupo «Facturador», antes del
+# de Raya PSP), con la factura de cada uno.
+INVOICE_EVENTS: list[tuple[str, dict[str, Any]]] = [
+    ("invoice.issued", facturador.INVOICE_ISSUED),
+    ("invoice.rejected", facturador.INVOICE_REJECTED),
+    ("invoice.failed", facturador.INVOICE_FAILED),
+]
+
+
+@pytest.mark.parametrize(
+    ("event_type", "invoice"), INVOICE_EVENTS, ids=[name for name, _ in INVOICE_EVENTS]
+)
+def test_construct_event_with_an_invoice(event_type: str, invoice: dict[str, Any]) -> None:
+    data = {**facturador.EVENT_INVOICE_ISSUED, "type": event_type, "data": {"object": invoice}}
+    body = json.dumps(data).encode()
+    header = rayacash.WebhookSignature.generate_header(body, WEBHOOK_SECRET)
+    event = rayacash.Webhook.construct_event(body, header, WEBHOOK_SECRET)
+    assert type(event) is rayacash.Event
+    assert event.type == event_type
+    assert type(event.data.object) is rayacash.Invoice
+    # El status de la factura es el del evento: issued, rejected o failed.
+    assert event.data.object.status == event_type.rsplit(".", 1)[1]
+    assert event.to_dict() == data
+
+
+def test_an_issued_invoice_event_brings_the_cae() -> None:
+    body = json.dumps(facturador.EVENT_INVOICE_ISSUED).encode()
+    header = rayacash.WebhookSignature.generate_header(body, WEBHOOK_SECRET)
+    event = rayacash.Webhook.construct_event(body, header, WEBHOOK_SECRET)
+    invoice = event.data.object
+    assert isinstance(invoice, rayacash.Invoice)
+    assert (invoice.point_of_sale, invoice.number, invoice.cae) == (5, 1234, facturador.CAE)
+    assert event.livemode is True  # el Facturador emite solo en tu cuenta real
+
+
+def test_rejected_and_failed_invoice_events_bring_the_reason() -> None:
+    for event_data, code in (
+        (facturador.EVENT_INVOICE_REJECTED, "arca_rejected"),
+        (facturador.EVENT_INVOICE_FAILED, "not_issued"),
+    ):
+        body = json.dumps(event_data).encode()
+        header = rayacash.WebhookSignature.generate_header(body, WEBHOOK_SECRET)
+        invoice = rayacash.Webhook.construct_event(body, header, WEBHOOK_SECRET).data.object
+        assert isinstance(invoice, rayacash.Invoice)
+        assert invoice.failure_reason is not None
+        assert invoice.failure_reason.code == code
+        assert invoice.failure_reason.message == facturador.FAILURE_MESSAGES[code]
+
+
+def test_event_type_lists_the_invoice_events() -> None:
+    names = get_args(rayacash.EventType)
+    assert [name for name in names if name.startswith("invoice.")] == [
+        name for name, _ in INVOICE_EVENTS
+    ]
+    # Después de los identity.* y antes de los psp.*.
+    issued = names.index("invoice.issued")
+    assert names[issued : issued + 3] == ("invoice.issued", "invoice.rejected", "invoice.failed")
+    assert names[issued - 1] == "identity.verification.canceled"
+    assert names[issued + 3] == "psp.customer.activated"
 
 
 # --- Raya PSP: los eventos psp.* -----------------------------------------------------------------

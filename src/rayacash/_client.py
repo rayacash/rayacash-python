@@ -14,6 +14,7 @@ from rayacash._deprecated import warn_deprecated
 from rayacash._encoding import encode_query
 from rayacash._event import Event
 from rayacash._identity_verification_service import IdentityService
+from rayacash._invoice_service import InvoiceService
 from rayacash._list_object import ListObject
 from rayacash._oauth_service import OAuthService
 from rayacash._payment_service import PaymentService
@@ -96,6 +97,9 @@ class RayaClient:
     Si tu cuenta de empresa tiene Raya PSP activado, ``client.psp`` crea cuentas con CVU a nombre
     de tus clientes y transfiere en su nombre, también con tu clave secreta.
 
+    Con el Facturador configurado en Negocios › Facturador, ``client.invoices`` emite facturas
+    electrónicas en ARCA a tu nombre, también con tu clave secreta.
+
     En un sandbox, con su clave secreta de prueba (``raya_sk_test_…``), la misma API crea pagos de
     prueba y ``client.test_helpers.payments.simulate_transfer()`` simula que llegó la
     transferencia, sin mover plata.
@@ -124,6 +128,7 @@ class RayaClient:
     connect: ConnectService
     identity: IdentityService
     psp: PspService
+    invoices: InvoiceService
     test_helpers: SandboxHelpersService
 
     def __init__(
@@ -167,6 +172,7 @@ class RayaClient:
         self.connect = ConnectService(self._requestor)
         self.identity = IdentityService(self._requestor)
         self.psp = PspService(self._requestor)
+        self.invoices = InvoiceService(self._requestor)
         self.test_helpers = SandboxHelpersService(self._requestor)
 
     @property

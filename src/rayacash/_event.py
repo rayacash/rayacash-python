@@ -6,6 +6,7 @@ from typing_extensions import Literal
 
 from rayacash._connect_order import ConnectOrder
 from rayacash._identity_verification import IdentityVerification
+from rayacash._invoice import Invoice
 from rayacash._payment import Payment
 from rayacash._psp_customer import PspCustomer
 from rayacash._psp_document_request import PspDocumentRequest
@@ -16,12 +17,13 @@ from rayacash._transfer import Transfer
 #: Los tipos de evento que existen hoy. Pueden sumarse otros: tu código tiene que ignorarlos.
 #: Los ``connect.order.*`` (Raya Connect) le llegan al dueño de la app; la cuenta conectada
 #: recibe sus ``payment.*``. Los ``identity.verification.*`` (Identidad) avisan cuando una
-#: verificación llega a un estado final. Los ``psp.*`` (Raya PSP, solo con Raya PSP aprobado)
-#: avisan los cambios de los clientes de tu empresa, sus transferencias y los pedidos de
-#: documentación sobre ellos. Los ``checkout.*`` del final son legacy, sus nombres en la 1.1.0: la
-#: API ya no los emite (solo vuelven si reenviás desde el dashboard un evento de antes del cambio)
-#: y quedan acá para que el código escrito para la 1.1.0 siga tipando. Compará ``event.type`` con
-#: los ``connect.order.*``.
+#: verificación llega a un estado final. Los ``invoice.*`` (Facturador) avisan cuando ARCA emitió
+#: una factura tuya o la rechazó, o cuando no pudimos emitirla. Los ``psp.*`` (Raya PSP, solo con
+#: Raya PSP aprobado) avisan los cambios de los clientes de tu empresa, sus transferencias y los
+#: pedidos de documentación sobre ellos. Los ``checkout.*`` del final son legacy, sus nombres en la
+#: 1.1.0: la API ya no los emite (solo vuelven si reenviás desde el dashboard un evento de antes
+#: del cambio) y quedan acá para que el código escrito para la 1.1.0 siga tipando. Compará
+#: ``event.type`` con los ``connect.order.*``.
 EventType = Literal[
     "transfer.received",
     "transfer.sent",
@@ -38,6 +40,9 @@ EventType = Literal[
     "identity.verification.declined",
     "identity.verification.expired",
     "identity.verification.canceled",
+    "invoice.issued",
+    "invoice.rejected",
+    "invoice.failed",
     "psp.customer.activated",
     "psp.customer.updated",
     "psp.customer.failed",
@@ -63,9 +68,9 @@ class Event(RayaObject):
     """Un evento de webhook. Armalo con ``rayacash.Webhook.construct_event(...)``.
 
     ``event.data.object`` es el ``Transfer``, el ``Payment``, el ``ConnectOrder``, la
-    ``IdentityVerification`` (siempre con ``person`` en ``None``) o, en Raya PSP, el
-    ``PspCustomer``, el ``PspTransfer`` o el ``PspDocumentRequest``, tal como estaba cuando ocurrió
-    el evento. ``webhook.test`` (el botón «Enviar evento de prueba») trae
+    ``IdentityVerification`` (siempre con ``person`` en ``None``), la ``Invoice`` (Facturador) o, en
+    Raya PSP, el ``PspCustomer``, el ``PspTransfer`` o el ``PspDocumentRequest``, tal como estaba
+    cuando ocurrió el evento. ``webhook.test`` (el botón «Enviar evento de prueba») trae
     ``{"object": "test", …}``: respondé 2xx e ignoralo.
 
     ``livemode`` es ``False`` en los eventos de un sandbox y ``True`` en los de tu cuenta real.
@@ -79,6 +84,7 @@ class Event(RayaObject):
             | Payment
             | ConnectOrder
             | IdentityVerification
+            | Invoice
             | PspCustomer
             | PspTransfer
             | PspDocumentRequest
